@@ -1,0 +1,45 @@
+---
+title: "dndscv.analysis"
+author: Noor Rizvi
+output: html_document
+date: "2024-02-12"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+https://htmlpreview.github.io/?http://github.com/im3sanger/dndscv/blob/master/vignettes/dNdScv.html
+
+```{r}
+library(devtools)
+library(dndscv)
+library(parallel)
+  ncores <- 2
+
+```
+
+
+```{r}
+
+# Load and prep MAFS object data
+mafs <- readRDS("/path/to/Rdata/output/exp04/mafs_flags_filtered_pass_vaf0.1.rds") 
+mutations <- mafs[, c("Tumor_Sample_Barcode", "Chromosome", "Start_Position", "Reference_Allele", "Tumor_Seq_Allele2")]
+colnames(mutations) <- c("sampleID", "chr", "pos", "ref", "mut")
+
+dndscv.refdb <- "/path/to/tools/dndscv/dndscv_data-master/data/RefCDS_human_GRCh38.p12_dNdScv.0.1.0.rda"
+
+
+# Perform  dndscv analysis
+dndsout = dndscv(mutations, refdb= dndscv.refdb, cv=NULL) # cv = covs returns error here
+
+# Extract top 10 selection results
+sel_cv = dndsout$sel_cv
+print(head(sel_cv,10), digits = 3)
+
+# Use custom q value <0.05
+signif_genes = sel_cv[sel_cv$qglobal_cv<0.05, c("gene_name","qglobal_cv")]
+
+
+
+```

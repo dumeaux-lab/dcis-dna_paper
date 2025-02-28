@@ -1,0 +1,257 @@
+---
+title: "MutationalPatterns"
+author: "Noor Rizvi"
+date: "2025-02-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+https://bioconductor.org/packages/release/bioc/vignettes/MutationalPatterns/inst/doc/Introduction_to_MutationalPatterns.html
+
+```{r}
+
+library(MutationalPatterns)
+library(BSgenome)
+  ref_genome <- "BSgenome.Hsapiens.UCSC.hg38"
+library(ref_genome, character.only = TRUE)
+library(dplyr)
+library(reshape2)
+library(tidyr)
+library(ggplot2)
+source("../../src/bresat.R")
+source("../../src/survival.R")
+
+```
+
+```{r}
+
+# load in data
+all.paired <- readRDS("/path/to/metadata/all.paired.rds")
+mafs <- readRDS("path/to/Rdata/output/exp04/mafs_flags_filtered_pass_vaf0.1.rds")
+
+```
+
+```{r}
+
+sn.tumor <- all.paired$sample_name[grep("_D", all.paired$sample_name)]
+
+# Construct file paths for VCF files
+selected_vcfs <- paste0("/path/to/bc_dcis/DNAseq_allBatches/neusomatic2/", sn.tumor,
+                        "/work_postcall_ensemble/NeuSomatic_ensemble.vcf")
+
+#Read VCF as GRanges object
+grl <- read_vcfs_as_granges(selected_vcfs, sn.tumor, ref_genome, type = "all")
+
+```
+
+
+```{r}
+
+# Filter mutations based on tumor sample 
+grl.filtered <- lapply(1:length(sn.tumor), function(x){
+  mutation.dat <- as.data.frame(mafs[mafs$Tumor_Sample_Barcode == sn.tumor[x], ])
+
+  # Format reference and alternate alleles
+  mutation.dat$REF <- mutation.dat$Reference_Allele
+  mutation.dat$REF <- ifelse(mutation.dat$REF=="-", ".", mutation.dat$REF)
+  mutation.dat$ALT <- mutation.dat$Tumor_Seq_Allele2
+  mutation.dat$ALT <- ifelse(mutation.dat$ALT=="-", ".", mutation.dat$ALT)
+  
+  # Select columns
+  mutation.dat <- mutation.dat[, colnames(mutation.dat) %in% c("Chromosome", "Start_Position", "End_Position", "Strand","REF", "ALT", "Variant_Type", "FILTER")]
+  
+  # Convert to GRanges format
+  gr.filtered <- makeGRangesFromDataFrame(mutation.dat, keep.extra.columns=TRUE,
+                         ignore.strand=FALSE,
+                         seqinfo=NULL,
+                         seqnames.field="Chromosome",
+                         start.field="Start_Position",
+                         end.field="End_Position",
+                         strand.field="Strand",
+                         starts.in.df.are.0based=FALSE)
+  
+# Read VCFs and fidn overlapping mutations  
+  gr <- read_vcfs_as_granges(selected_vcfs[x], sn.tumor[x] , ref_genome, type = "all")
+  gr.final <- gr[[sn.tumor[x]]][findOverlaps(gr[[sn.tumor[x]]], gr.filtered)@from, ]
+  
+  return(gr.final)
+})
+
+grl.filtered <- GRangesList(grl.filtered)
+names(grl.filtered) <- sn.tumor
+  
+
+# Retrieve mutation types
+snv_grl <- get_mut_type(grl.filtered, type = "snv")
+indel_grl <- get_mut_type(grl.filtered, type = "indel")
+dbs_grl <- get_mut_type(grl.filtered, type = "dbs")
+mbs_grl <- get_mut_type(grl.filtered, type = "mbs")
+
+# Retrieve base substitution types from SNV data
+muts <- mutations_from_vcf(snv_grl[[1]]) #1st sample only
+head(muts) 
+types <- mut_type(snv_grl[[1]])#1st sample only
+head(types)
+context <- mut_context(snv_grl[[1]], ref_genome)#1st sample only
+head(context)
+
+# Count mutation type occurrences for all VCF objects (SNV only)
+type_occurrences <- mut_type_occurrences(snv_grl, ref_genome)
+type_occurrences
+
+
+# Plot mutation spectrum 
+p1 <- plot_spectrum(type_occurrences)
+p3 <- plot_spectrum(type_occurrences, CT = TRUE, indv_points = TRUE)
+p4 <- plot_spectrum(type_occurrences, by = sn.tumor, CT = TRUE, legend = TRUE)
+
+# Generate trinucleotide mutation matrix
+mut_mat <- mut_matrix(vcf_list = snv_grl, ref_genome = ref_genome)
+head(mut_mat)
+
+# Refit signatures
+signatures = get_known_signatures()
+fit_res <- fit_to_signatures(mut_mat, signatures)
+
+# Stricter refitting
+strict_refit <- fit_to_signatures_strict(mut_mat, signatures, max_delta = 0.004)
+fit_res_strict <- strict_refit$fit_res
+
+# Validate samples in all.paired mathc columns in mut.mat
+table(all.paired$sample_name[grep("_D", all.paired$sample_name)]==colnames(mut_mat))
+
+# Filter all.paired for tumor samples and add column for local recurrence 
+tb <- all.paired[grep("_D", all.paired$sample_name),]
+tb <- adjust_survival(final_df, cutoff=10) %>% #10y adjusted
+   rename(grade = nugradef, 
+          "local recurrence" = event.10)
+
+# Extract signature contributions and reshape data 
+contribution <- fit_res_strict$contribution %>%
+    as.data.frame() %>%
+    tibble::rownames_to_column("Signature") %>%
+    tidyr::pivot_longer(-Signature, names_to = "Sample", values_to = "Contribution") %>%
+    dplyr::mutate(
+      Sample = factor(Sample, levels = unique(Sample)),
+      Signature = factor(Signature, levels = unique(Signature))
+    )
+
+# Signature contributions by total contribution per sample
+contrib.wide <- contribution %>%
+  group_by(Sample) %>%
+  mutate(total = sum(Contribution)) %>%
+  mutate(freq = Contribution/total) %>%
+  select(Signature, Sample, freq) %>%
+  spread(key = Sample, value=freq)
+
+# Identify and remove samples with zero total contribution 
+table(rowSums(contrib.wide[,-1])==0)
+contrib.wide <- data.frame(contrib.wide)
+rownames(contrib.wide) <- contrib.wide[,1]
+contrib.wide <- contrib.wide[,-1]
+contrib.wide <- contrib.wide[rowSums(contrib.wide)>0,]
+
+# Select signatures with contributions in more than 10 samples
+contrib.wide.select <- contrib.wide[rowSums(contrib.wide>0)>10,]
+
+# Extract relevant clinical variables for annotation
+cl <- tb[, c("age", "subtype", "grade", "local recurrence")]
+rownames(cl) <- tb$sample_name
+
+# Define color mappings for clinical annotations
+col.clinical <- list()
+col.clinical[["subtype"]] <- c(LumA="blue4", LumB="deepskyblue", Basal="firebrick2", Normal="green4", Her2="hotpink2", "NA"="darkgrey")
+col.clinical[["age"]] <- c(over60="#3182bd", "50-60"="#9ecae1", under50="#deebf7")
+col.clinical[["grade"]] <- c(High="#de2d26", Moderate="#fc9272", Low="#fee0d2")
+col.clinical[["local recurrence"]] <- c("1"="#b35806", "0" = "#fee0b6")
+
+
+# Perform rank-sum ordering analysis on signature contributions
+bs <- sig.ranksum(as.matrix(contrib.wide.select), ns =1:nrow(as.matrix(contrib.wide.select)), full.return = TRUE)
+
+# Generate heatmap
+pdf("../../figures/exp04/mut.sig.heatmap.pdf")
+pheatmap::pheatmap(bs$dat, scale="row", cluster_rows = FALSE, cluster_cols = FALSE,
+                   annotation_col = cl, annotation_colors = col.clinical)
+dev.off()
+
+
+```
+
+```{r}
+
+# append signature contribution to patient table
+
+# Convert signature contribution matrix into a data frame to store signatures
+df <- data.frame(fit_res_strict$contribution)
+df$signature <- rownames(df)
+
+# Reshape and add signature names as columns
+df_long <- pivot_longer(df, colnames(df)[-148])
+df_long_sig <- pivot_wider(df_long, names_from="signature")
+colnames(df_long_sig)[1] <- "sample_name"
+
+# Merge signature contributions with patient metadata
+final_df <- dplyr::left_join(all.paired, df_long_sig)
+
+# Process relative contributions
+contrib.wide$signature <- rownames(contrib.wide)
+df_long_rel <- pivot_longer(contrib.wide, colnames(df)[-148])
+df_long_sig_rel <- pivot_wider(df_long_rel, 
+                               names_from="signature", names_prefix = "rel")
+colnames(df_long_sig_rel)[1] <- "sample_name"
+
+# Merge relative contributions and save new clinical data table
+final_df <- dplyr::left_join(final_df, df_long_sig_rel)
+saveRDS(final_df, "/path/to/metadata/all.paired.rds")
+
+```
+
+
+```{r}
+
+# Process mutation type occurences per sample
+tb_per_sample <- type_occurrences %>%
+    tibble::rownames_to_column("sample") %>%
+    dplyr::mutate(by = "sample") %>% # Add user defined grouping
+    tidyr::pivot_longer(c(-sample, -by), names_to = "variable", values_to = "nmuts") %>% # Make long format
+    dplyr::group_by(sample) %>%
+    dplyr::mutate(value = nmuts / sum(nmuts)) %>% # Calculate relative values
+    dplyr::ungroup() %>%
+    dplyr::mutate(
+      sub_type = stringr::str_remove(variable, " .*"),
+      variable = factor(variable, levels = unique(variable))
+    )
+
+# Filter for patients with nmut >= 2000
+high_contrib_samples <- tb_per_sample %>%
+    group_by(sample) %>%
+    summarize(total_nmuts = sum(nmuts)) %>%
+    filter(total_nmuts >= 2000)
+
+
+# Define colours and filter mutation data for plotting
+colors <- MutationalPatterns:::COLORS7
+CpG <- which(tb_per_sample$variable == "C>T at CpG")
+other <- which(tb_per_sample$variable == "C>T other")
+
+test3 <- subset(tb_per_sample, !variable =="C>T")
+test3$variable <- as.character(test3$variable)
+test3$sample <- factor(test3$sample, levels = colnames(bs$dat))
+
+# Create barplot
+pp <- ggplot(test3, aes(x = sample, y = nmuts, fill = variable)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = colors, name = "Point mutation type") +
+  theme_classic() +
+  xlab("") +
+  scale_x_discrete(limits = levels(test3$sample)) +
+  ylab("Absolute contribution")
+
+pdf("../../figures/exp04/barplot_absolute_type_occurence.pdf")
+pp
+dev.off()
+```

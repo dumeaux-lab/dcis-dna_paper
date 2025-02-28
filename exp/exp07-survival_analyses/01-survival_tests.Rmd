@@ -1,0 +1,346 @@
+---
+title: "Survival analyses"
+author: "Vanessa Dumeaux"
+date: "2024-04-12"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load functions to conduct survival analyses
+
+
+```{r}
+source("../../src/survival.R")
+```
+
+
+# Load packages
+```{r}
+library(reshape2)
+library(survival)
+library(survminer)
+library(maftools)
+library(coxphf)
+library(clusterProfiler)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(enrichplot)
+```
+
+
+```{r}
+
+# Load data
+dcis <- readRDS("/path/to/Rdata/output/exp04/dcis.rds")
+
+# Survival analysis all patients
+all.sig.genes <- survival.analysis(maf_data = dcis, time = "time.10", event = "event.10", clinsubset = NULL, top = nrow(dcis@gene.summary[dcis@gene.summary$MutatedSamples>5]), pvalue = 0.01)
+
+# Survival analysis RT treated patients
+radiation.sig.genes <- survival.analysis(maf_data = dcis, time = "time.10", event = "event.10", clinsubset = "radiation==TRUE", top = nrow(dcis@gene.summary[dcis@gene.summary$MutatedSamples>5]), pvalue = 0.01)
+
+# Survival analysis non-RT treated patients
+noradiation.sig.genes <- survival.analysis(maf_data = dcis, time = "time.10", event = "event.10", clinsubset = "radiation==FALSE", top = nrow(dcis@gene.summary[dcis@gene.summary$MutatedSamples>5]), pvalue = 0.01)
+
+```
+
+
+```{r}
+
+# Variant classification colours
+vc_cols = RColorBrewer::brewer.pal(n = 8, name = 'Paired')
+names(vc_cols) = c(
+  'Frame_Shift_Del',
+  'Missense_Mutation',
+  'Nonsense_Mutation',
+  'Multi_Hit',
+  'Frame_Shift_Ins',
+  'In_Frame_Ins',
+  'Splice_Site',
+  'In_Frame_Del'
+)
+
+# Annotation colours
+col.clinical <- list()
+col.clinical[["subtype"]] <- c(LumA="blue4", LumB="deepskyblue", Basal="firebrick2", Normal="green4", Her2="hotpink2", "NA"="darkgrey")
+col.clinical[["age"]] <- c(over60="#3182bd", "50-60"="#9ecae1", under50="#deebf7")
+col.clinical[["nugradef"]] <- c(High="#de2d26", Moderate="#fc9272", Low="#fee0d2")
+col.clinical[["event.10.chr"]] <- c("0"="#fee0b6", "1"="#b35806")
+
+
+# Oncoplot all significant genes
+pdf("../../figures/exp07/oncoplot_all_genes_coxphf.pdf", width =12)
+oncoplot(maf = all.sig.genes$maf, genes = all.sig.genes$genes, colors = vc_cols, clinicalFeatures = c('event.10.chr', 'age', 'nugradef','subtype'), annotationColor=col.clinical,fontSize = 0.3,  gene_mar = 8, showTitle = FALSE)
+dev.off()
+
+# Oncoplot for RT associated genes
+pdf("../../figures/exp07/oncoplot_radiation_genes_coxphf.pdf", width =12)
+oncoplot(maf = radiation.sig.genes$maf, genes = radiation.sig.genes$genes, colors = vc_cols, clinicalFeatures = c('event.10.chr','age', 'nugradef','subtype'), annotationColor=col.clinical,fontSize = 0.3,  gene_mar = 8, showTitle = FALSE)
+dev.off()
+
+
+
+
+```
+# More exploratory plots for genes significantly associated with LR risk in all patients 
+
+## HR plots ordered like oncoplot
+
+```{r}
+
+# filter significant genes for plotting
+plotdf <- all.sig.genes$surv_result$restb[all.sig.genes$surv_result$restb$Gene_combination %in% all.sig.genes$genes,]
+
+# Set factor levels to have the same order than oncoplot
+plotdf$Gene_combination <- factor(plotdf$Gene_combination, 
+                                     levels = rev(c("MYO7A", "HIVEP3", "DNASE2B", "TRIM66", "PDZD8",
+                                                "TIGD6", "DERL3", "VSIG10L", "STOX1", "TBL3", "STON1", "NPFFR1")), ordered = TRUE)
+                                     
+# Hazard ratio plot                                     
+pdf(paste0("../../figures/exp07/hr_allgenes_ordered.pdf"), height = 10, width = 20)
+ggplot(plotdf, aes(y = Gene_combination)) +
+         geom_point(aes(x = hr), size = 3) +
+         geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2) +
+         geom_vline(xintercept = 1, linetype = "dashed", color = "gray50") +
+         scale_x_log10() +
+         theme_bw() +
+         theme(
+           panel.grid.minor = element_blank(),
+           panel.grid.major.y = element_blank()
+         ) +
+         labs(
+           x = "",
+           y = "",
+           title = ""
+         ) +
+         # Add HR and CI values as text
+         geom_text(aes(x = max(conf.high) * 1.2, 
+                       label = sprintf("%.2f (%.2f-%.2f)", hr, conf.low, conf.high)),
+                   hjust = 0) +
+         # Add p-values
+         geom_text(aes(x = max(conf.high) * 2, 
+                       label = sprintf("p = %.3f", P_value)),
+                   hjust = 0)
+dev.off()
+```
+
+## KM curves
+```{r}
+# Survival analysis on significant genes (gene set size =  12)
+combo.all.sig.genes <- survival.analysis(maf_data =all.sig.genes$maf, 
+                                         genes = all.sig.genes$genes, 
+                                         geneSetSize = 12, 
+                                         genecombo = 'union', 
+                                         time = "time.10", 
+                                         event = "event.10", pvalue = 0.01) 
+
+# Kaplan-Meier plot: No patients in the radiated group without at least one mutation in these 13 genes experienced recurrence within 10 years
+km <- ggsurvplot(
+      combo.all.sig.genes$surv_result$res$MYO7A_PDZD8_DNASE2B_TRIM66_HIVEP3_TIGD6_DERL3_VSIG10L_STOX1_TBL3_STON1_NPFFR1$fit.km, 
+      # survfit object with calculated statistics.
+      data=combo.all.sig.genes$surv_result$res$MYO7A_PDZD8_DNASE2B_TRIM66_HIVEP3_TIGD6_DERL3_VSIG10L_STOX1_TBL3_STON1_NPFFR1$data,
+      pval = TRUE,             # show p-value of log-rank test.
+      conf.int = TRUE,         # show confidence intervals for 
+                            # point estimaes of survival curves.
+      conf.int.style = "step",  # customize style of confidence intervals
+      xlab = "Time in years",   # customize X axis label.
+      break.time.by = 3,     # break X axis in time intervals by 200.
+      ggtheme = theme_light(), # customize plot and risk table with a theme.
+      risk.table = "abs_pct",  # absolute number and percentage at risk.
+      risk.table.y.text.col = T,# colour risk table text annotations.
+      risk.table.y.text = FALSE,# show bars instead of names in text annotations
+                            # in legend of risk table.
+      ncensor.plot = TRUE,      # plot the number of censored subjects at time t
+      surv.median.line = "hv",  # add the median survival pointer.
+      title = ""
+   )
+km
+
+pdf("../../figures/exp07/km_union_all_genes_coxphf.pdf")
+print(km)
+dev.off()
+```
+
+
+
+
+## GO annotations - significant genes in all patients
+
+```{r}
+
+# Load gene ontology data for molecular function (MF)
+hsGO <- godata('org.Hs.eg.db', ont="MF")
+
+# Convert gene symbols to Entrez IDs
+entrez_ids <- mapIds(org.Hs.eg.db,
+                    keys = as.character(plotdf$Gene_combination),
+                    column = "ENTREZID",
+                    keytype = "SYMBOL",
+                    multiVals = "first")
+
+# Perform gene ontology classification for cellular component (CC)
+ggo <- groupGO(gene     = entrez_ids,
+               OrgDb    = org.Hs.eg.db,
+               ont      = "CC",
+               level    = 3,
+               readable = TRUE)
+
+# Convert GO results to dataframe and filter for terms with at least one associated gene  
+ggodf <- as.data.frame(ggo)
+ggodf[ggodf$Count>0,]
+
+# Expand gene lists within GO terms and mark presence  
+genes_df <- ggodf[ggodf$Count>0,] %>%
+  separate_rows(geneID, sep = "/") %>%
+  mutate(Present = 1)
+
+# GO enrichment plot for Cellular Component terms 
+allgenes.cc.plot <- ggplot(genes_df, aes(x = Description, y = geneID)) +
+  geom_point(size = 3, color = "steelblue") +
+  coord_flip() +
+  theme_minimal() +
+  labs(x = "Cellular Component GO Terms",
+       y = "",
+       title = "") +
+  theme(
+  axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+  axis.text.y = element_text(size = 10)
+)
+
+ggsave("../../figures/exp07/allgenes_cc_plot.pdf", allgenes.cc.plot)
+
+```
+
+
+# More exploratory plots for genes significantly associated with LR risk in RT-treated patients 
+
+
+## KM curves - combined variant radiation
+
+
+```{r}
+
+# Survival analysis on radiation-associated significant genes
+combo.radiation.sig.genes <- survival.analysis(maf_data =radiation.sig.genes$maf, 
+                                               genes = radiation.sig.genes$genes, 
+                                               geneSetSize = 27, genecombo = 'union', 
+                                               time = "time.10", 
+                                               event = "event.10", 
+                                               pvalue = 0.01) 
+# Note: no event within 10 years for radiated group which do not have at least one mutation in one of these 13 genes
+
+# Generate Kaplan-Meier survival plot for the identified gene combination
+km <- ggsurvplot(
+      combo.radiation.sig.genes$surv_result$res$MAGEC3_EXD3_SH2B2_NPFFR1_ANO6_GLI3_OR4D6_STON1_PCSK1_CAPN9_ZFYVE9_PTPN13_SRRM5_SORBS1_TMEM132C_AADACL3_ABCA2_CEP128_CHD1L_COL5A3_SZT2_RELN_KIAA1217_PATJ_KRT1_WWC1_MAGEC1$fit.km,
+      data=combo.radiation.sig.genes$surv_result$res$MAGEC3_EXD3_SH2B2_NPFFR1_ANO6_GLI3_OR4D6_STON1_PCSK1_CAPN9_ZFYVE9_PTPN13_SRRM5_SORBS1_TMEM132C_AADACL3_ABCA2_CEP128_CHD1L_COL5A3_SZT2_RELN_KIAA1217_PATJ_KRT1_WWC1_MAGEC1$data,
+      pval = TRUE,             # show p-value of log-rank test.
+      conf.int = TRUE,         # show confidence intervals for 
+                            # point estimaes of survival curves.
+      conf.int.style = "step",  # customize style of confidence intervals
+      xlab = "Time in years",   # customize X axis label.
+      break.time.by = 3,     # break X axis in time intervals by 200.
+      ggtheme = theme_light(), # customize plot and risk table with a theme.
+      risk.table = "abs_pct",  # absolute number and percentage at risk.
+      risk.table.y.text.col = T,# colour risk table text annotations.
+      risk.table.y.text = FALSE,# show bars instead of names in text annotations
+                            # in legend of risk table.
+      ncensor.plot = TRUE,      # plot the number of censored subjects at time t
+      surv.median.line = "hv",  # add the median survival pointer.
+      title = ""
+   )
+
+pdf("../../figures/exp07/km_union_radiation_genes_coxphf.pdf")
+print(km)
+dev.off()
+```
+
+
+## Survival analysis with Cox proportional hazards model, adjusting for age
+
+```{r}
+
+# Check cox (also after adjustment for age - use Firth's penalized likelihood Cox regression)
+cd <- combo.radiation.sig.genes$surv_result$res$MAGEC3_EXD3_SH2B2_NPFFR1_ANO6_GLI3_OR4D6_STON1_PCSK1_CAPN9_ZFYVE9_PTPN13_SRRM5_SORBS1_TMEM132C_AADACL3_ABCA2_CEP128_CHD1L_COL5A3_SZT2_RELN_KIAA1217_PATJ_KRT1_WWC1_MAGEC1$data
+firth_model <- coxphf(Surv(Time, Status) ~ Group+age, data = cd)
+firth_model
+
+# Perform survival analysis on radiation-specific genes but when including all patients
+combo.radiation.sig.genes <- survival.analysis(maf_data = all.sig.genes$maf, 
+                                               genes = radiation.sig.genes$genes, 
+                                               geneSetSize = 27, 
+                                               genecombo = 'union', 
+                                               time = "time.10", 
+                                               event = "event.10", 
+                                               pvalue = 0.01) # not significant when all patients are included
+```
+
+## check if it's related with number of synonymous variable
+
+```{r}
+
+# Extract survival data
+dat <- combo.radiation.sig.genes$surv_result$res$MAGEC3_EXD3_SH2B2_NPFFR1_ANO6_GLI3_OR4D6_STON1_PCSK1_CAPN9_ZFYVE9_PTPN13_SRRM5_SORBS1_TMEM132C_AADACL3_ABCA2_CEP128_CHD1L_COL5A3_SZT2_RELN_KIAA1217_PATJ_KRT1_WWC1_MAGEC1$data
+dat$n_nonsynonymous_mut <- as.numeric(dat$n_nonsynonymous_mut)
+
+# T-test to compare non synonymous mutation burden between groups
+t.test(dat$n_nonsynonymous_mut~dat$Group)
+
+# Violin plot of non synonymous mutation burden across groups
+pdf("../../figures/exp07/union_radiation_genes_nMut_violin_coxphf.pdf", height = 4)
+ggplot(dat, aes(x = Group, y = log(n_nonsynonymous_mut))) +
+  geom_violin(alpha = 0.5) +
+  geom_point(aes(x = Group, y = log(n_nonsynonymous_mut), colour = event.10.chr),position = position_jitter(seed = 1, width = 0.2)) +
+  scale_colour_manual(values = c("#fee0b6", "#b35806")) +
+  theme(legend.position = "none") +
+  theme_minimal() +
+  labs(x="", y="# non-synonymous variants (log2)", color="local recurrence")
+dev.off()
+
+```
+
+
+```{r}
+# Perform survival analysis on radiation-associated significant genes (gene set size = 27)
+combo.radiation.sig.genes <- survival.analysis(maf_data = all.sig.genes$maf, 
+                                               genes = radiation.sig.genes$genes, 
+                                               geneSetSize = 27, 
+                                               genecombo = 'union', 
+                                               time = "time.10", 
+                                               event = "event.10", 
+                                               pvalue = 0.01) # not significant when all patients are included
+```
+
+
+
+
+## GO annotations. - significant genes in radiation-treated patients
+```{r}
+
+# GO enrichment for Biological Process (BP)  
+ego10 <- enrichGO(entrez_ids, 
+                OrgDb = 'org.Hs.eg.db', ont="BP", pvalueCutoff=1, readable = TRUE)
+
+# WikiPathways (WP) enrichment analysis  
+ego10 <- enrichWP(entrez_ids, pvalueCutoff=1,  organism = "Homo sapiens")
+ego10[ego10$qvalue < 0.2,] 
+
+# GO enrichment analysis for Cellular Component (CC)  
+ego10 <- enrichGO(entrez_ids,
+                OrgDb = 'org.Hs.eg.db', 
+                ont="CC", pvalueCutoff = 1, 
+                readable = TRUE, 
+                qvalueCutoff = 0.2)
+
+# Compute pairwise similarity between enriched GO terms
+ego <- pairwise_termsim(ego10)
+
+# Enrichment map plot for Cellular Component terms 
+pdf("../../figures/exp07/radiationgenes_cc_net.pdf", width = 10)
+emapplot(ego, showCategory = 100)  # adjust number of categories as needed
+dev.off()
+
+
+```

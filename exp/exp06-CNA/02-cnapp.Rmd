@@ -1,0 +1,491 @@
+---
+title: "CNApp"
+author: "Vanessa Dumeaux"
+date: "2024-09-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# CNapp to conduct region analyses
+
+We used CNapp to apply a re-segmentation approach to adjust for amplitude divergence due to technical variability using the default settings (minimum segment length = 100 Kbp, minimum amplitude deviation from segment to zero = 0.16, maximum distance between segments=1 Mb, maximum amplitude deviation between segments = 0.16, and maximum BAF deviation between segments = 0.1). 
+
+
+# Reformat ASCAT output for CNApp
+
+```{r}
+ascat_output <- readRDS("/path/to/Rdata/output/exp06/output_ascat/Robj/ascat.output.rds")
+ascat_ploidy <- read.table("/path/to/Rdata/output/exp06/output_ascat/ascat_ploidy_filtered.tsv", sep="\t", header = TRUE)
+
+
+# Merge CN data with ploidy data
+cn <- ascat_output %>%
+  left_join(ascat_ploidy, by = "sample") %>%
+  mutate(relative_cn = (ascat_output$nMajor + ascat_output$nMinor)/ploidy) %>%
+  mutate(absolute_cn = ascat_output$nMajor + ascat_output$nMinor)
+  
+cn$absolute_cn_modified <- ifelse(cn$absolute_cn >= 5, 5, cn$absolute_cn)   
+
+
+cnapp <- data.frame(
+  ID = cn$sample,
+  chr = cn$chr,
+  loc.start = cn$startpos,
+  loc.end = cn$endpos,
+  seg.mean = log2(cn$absolute_cn) - log2(cn$ploidy))
+
+write.table(cnapp, "/path/to/Rdata/output/exp06/cnapp_input.txt", sep="\t", quote=FALSE, row.names=FALSE)
+
+dcis <- readRDS("/path/to/Rdata/output/exp04/dcis.rds")
+
+library(tibble)
+sample_annotation <- dcis@clinical.data
+sample_annotation$ID <- sample_annotation$Tumor_Sample_Barcode
+
+df <- sample_annotation %>%
+  select(ID, everything())
+
+df$surv_status <- df$event.10
+df$surv_time <- df$time.10
+
+
+write.table(df, "/path/to/Rdata/output/exp06/cnapp_clinical_input.txt", sep="\t", quote=FALSE, row.names=FALSE)
+
+
+```
+
+
+
+## Run CNapp Shiny application
+
+```{r}
+
+if(!require(shiny)) install.packages("shiny")
+if(!require(shinyBS)) install.packages("shinyBS")
+if(!require(shinyjs)) install.packages("shinyjs")
+if(!require(shinythemes)) install.packages("shinythemes")
+if(!require(shinyWidgets)) install.packages("shinyWidgets")
+if(!require(shinydashboard)) install.packages("shinydashboard")
+if(!require(survival)) install.packages("survival")
+if(!require(survminer)) install.packages("survminer")
+if(!require(Cairo)) install.packages("Cairo")
+
+
+if(!require(V8)) install.packages("V8")
+#if any issue here like 'ERROR: configuration failed for package ‘curl’' or 'ERROR: configuration failed for package ‘V8’' follow printed instructions on your command-line window
+
+if(!require(httr)) install.packages("httr")
+#if any issue here like 'ERROR: configuration failed for package ‘openssl’' follow printed instructions on your command-line window
+
+if(!require(plotly)) install.packages("plotly")
+if(!require(randomcoloR)) install.packages("randomcoloR")
+if(!require(heatmaply)) install.packages("heatmaply")
+if(!require(ggplot2)) install.packages("ggplot2")
+if(!require(ggsignif)) install.packages("ggsignif")
+if(!require(RColorBrewer)) install.packages("RColorBrewer")
+if(!require(randomForest)) install.packages("randomForest")
+if(!require(doBy)) install.packages("doBy")
+if(!require(parallel)) install.packages("parallel")
+if(!require(caret)) install.packages("caret")
+if(!require(XML)) install.packages("XML")
+#if any issue here like 'ERROR: configuration failed for package ‘XML’' ty installing 'libxml2' into your OS
+
+if (!require(devtools)) install.packages("devtools")
+
+if(!require(limma)) {source("http://www.bioconductor.org/biocLite.R");biocLite("limma")}
+if(!require(GenomicFeatures)) {source("http://www.bioconductor.org/biocLite.R");biocLite("GenomicFeatures")}
+#if any issue here like 'ERROR: configuration failed for package ‘RMySQL’' ty installing 'libmysqlclient' into your OS
+if(!require(GenomicAlignments)) {source("http://www.bioconductor.org/biocLite.R");biocLite("GenomicAlignments")}
+if(!require(GenVisR)) {source("http://www.bioconductor.org/biocLite.R");biocLite("GenVisR")}
+
+    ############## to use BiocManager ####################
+    #if (!requireNamespace("BiocManager", quietly = TRUE))
+    #    install.packages("BiocManager")
+    #BiocManager::install("limma")
+    #BiocManager::install("GenomicFeatures")
+    #BiocManager::install("GenomicAlignments")
+    #BiocManager::install("GenVisR")
+    ######################################################
+
+if(!require(shinysky)) {library(devtools); devtools::install_github("AnalytixWare/ShinySky")}
+#if(!require(GenVisR)) {library(devtools); devtools::install_github("griffithlab/GenVisR")}
+
+if (!require(webshot)) install.packages("webshot")
+
+# if(!require(phantomjs)) {webshot::install_phantomjs()}
+
+```
+
+
+
+```{r}
+# Easiest way is to use runGitHub to run CNApp from GitHub:
+library(shiny)
+runGitHub("CNApp", "ait5")
+```
+
+1. Re-segmentation approach to adjust for amplitude divergence due to technical variability using the default settings (minimum segment length = 100 Kbp, minimum amplitude deviation from segment to zero = 0.16, maximum distance between segments=1 Mb, maximum amplitude deviation between segments = 0.16, and maximum BAF deviation between segments = 0.1)
+2. Run Region Analyses for cytobands and save outputs
+
+# GCS analyses
+```{r}
+cytoband <- read.table("/path/to/Rdata/output/exp06/cnapp/region_analyses/cytobands/cna_profile_Cytobands_by_ID2024-09-12 10_47_01.867477.tsv", sep="\t", header = TRUE, row.names = 1)
+
+cl <- read.table("/path/to/Rdata/output/exp06/cnapp/res-seg_cna-scores/allsamples_CNApp_CNA_Scores_&_annotations_2024-09-10 10_45_15.475147.tsv", sep="\t", header = TRUE, row.names = 1)
+
+cl.df <- cl[ , c('event.10.chr','age', 'nugradef','subtype', 'GCS', 'time.10')]
+
+col.clinical <- list()
+col.clinical[["subtype"]] <- c(LumA="blue4", LumB="deepskyblue", Basal="firebrick2", Normal="green4", Her2="hotpink2", "NA"="darkgrey")
+col.clinical[["age"]] <- c(over60="#3182bd", "50-60"="#9ecae1", under50="#deebf7")
+col.clinical[["nugradef"]] <- c(High="#de2d26", Moderate="#fc9272", Low="#fee0d2")
+col.clinical[["event.10.chr"]] <- c("0"="#fee0b6", "1"="#b35806")
+col.clinical[["GCS"]] <- viridisLite::viridis(n=100, option="G", direction = -1)
+
+table(colnames(cytoband)==rownames(cl.df))
+cytoband <- cytoband[, rownames(cl.df)[order(cl.df$GCS)]]
+
+
+# Set custom color breaks for relative copy number values with unique breaks
+color_breaks <- unique(c(seq(-3, -0.5, length.out = 25), 
+                         seq(-0.5, 0, length.out = 25), 
+                         seq(0, 0.5, length.out = 25), 
+                         seq(0.5, 3, length.out = 25)))
+# Generate heatmap with clustering and annotations
+pheatmap::pheatmap(cytoband, cluster_cols = FALSE, cluster_rows = FALSE, annotation_col = cl.df,
+         color = colorRampPalette(c("blue", "white", "red"))(length(color_breaks) - 1),
+         breaks = color_breaks,
+         show_colnames = FALSE,  show_rownames = TRUE,
+         main = "Relative Copy Number Alterations Heatmap",
+         annotation_colors = col.clinical, filename = "../../figures/exp06/rel_cn_cnapp_cytoband_heatmap.pdf")
+```
+
+## GCS across grade
+```{r}
+library(ggridges)
+library(ggplot2)
+library(ggpubr)
+library(viridis)
+library(hrbrthemes)
+
+
+# Grade
+# Reorder the factor levels
+cl.df$nugradef <- factor(cl.df$nugradef, levels = c("Low", "Moderate", "High"))
+
+p6c <- ggplot(cl.df, aes(x = nugradef, y = GCS, fill = nugradef)) +
+  geom_violin(trim = FALSE, alpha = 0.7) +
+  geom_boxplot(width = 0.1, fill = "white", alpha = 0.5) +
+  geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
+  scale_fill_manual(values = c("Low" = "#fee0d2", 
+                               "Moderate" = "#fc9272", 
+                               "High" = "#de2d26")) +
+  labs(x = "Grade",
+       y = "GCS Score") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  stat_compare_means(comparisons = list(c("Low", "High")),
+                     label = "p.signif",
+                     method = "t.test",
+                     label.y = max(cl.df$GCS) + 3)
+
+
+t.test(cl.df$GCS[cl.df$nugradef == "High"], 
+                          cl.df$GCS[cl.df$nugradef == "Moderate"])
+t.test(cl.df$GCS[cl.df$nugradef == "High"], 
+                     cl.df$GCS[cl.df$nugradef == "Low"])
+t.test(cl.df$GCS[cl.df$nugradef == "Moderate"], 
+                         cl.df$GCS[cl.df$nugradef == "Low"])
+
+ggsave("../../figures/exp06/grade_gcs_violin.pdf", p6c, height = 5)
+```
+
+
+
+
+
+## GCS across subtypes
+```{r}
+
+# Define the color scheme
+subtype_colors <- c(LumA="blue4", LumB="deepskyblue", Basal="firebrick2", 
+                    Normal="green4", Her2="hotpink2")
+
+# Remove NA subtype and reorder factor levels
+cl.df_filtered <- cl.df[!is.na(cl.df$subtype), ]
+cl.df_filtered$subtype <- factor(cl.df_filtered$subtype, 
+                                 levels = c("Normal", "LumA", "LumB", "Her2", "Basal"))
+
+# Perform pairwise t-tests
+subtype_pairs <- combn(levels(cl.df_filtered$subtype), 2, simplify = FALSE)
+p_values <- sapply(subtype_pairs, function(pair) {
+  t.test(cl.df_filtered$GCS[cl.df_filtered$subtype == pair[1]],
+         cl.df_filtered$GCS[cl.df_filtered$subtype == pair[2]])$p.value
+})
+
+# Filter significant comparisons
+sig_comparisons <- subtype_pairs[p_values < 0.05]
+
+# Calculate y positions for significance bars
+max_y <- max(cl.df_filtered$GCS)
+y_positions <- seq((max_y) * 1.55, (max_y) * 1.75, length.out = length(sig_comparisons))
+
+# Create the plot
+p6d <- ggplot(cl.df_filtered, aes(x = subtype, y = GCS, fill = subtype)) +
+  geom_violin(trim = FALSE, alpha = 0.7) +
+  geom_boxplot(width = 0.1, fill = "white", alpha = 0.5) +
+  geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
+  scale_fill_manual(values = subtype_colors) +
+  labs(x = "Subtype",
+       y = "GCS Score") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1)) +
+  stat_compare_means(comparisons = sig_comparisons,
+                     label = "p.signif",
+                     method = "t.test",
+                     label.y = y_positions, tip.length = 0.01,
+                     vjust = 0.5)
+
+p6d
+
+ggsave("../../exp06/subtype_gcs_violin.pdf", p6d, height = 5)
+```
+
+
+
+# Arms gain/loss enrichment significance analysis ----------
+```{r}
+
+arms <- read.table("/data/lab_vm/refined/bc_dcis/DNAseq_allBatches/R/exp39/cnapp/region_analyses/chrom_arms/cna_profile_Arms_by_GCS2024-09-12 10_06_19.168891.tsv", sep="\t", header = TRUE, row.names = 1)
+
+
+arms_long <- rownames_to_column(arms, var = "arms")
+# Convert from wide to long format
+arms_long <- pivot_longer(
+  arms_long,
+  cols = starts_with("DCRT"),      # Columns to pivot
+  names_to = "ID",                          # Name of the new key column
+  values_to = "cna"          # Name of the new value column
+)
+
+cl.df2 <- rownames_to_column(cl.df, var = "ID")
+
+arms_long <- left_join(arms_long, cl.df2)
+```
+## plot proportions of gains/losses across arms incl all samples
+```{r}
+
+# Load necessary packages
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# Step 1: Extract chromosome number and arm
+arms_long <- arms_long %>%
+  mutate(
+    chr_num = gsub("chr(\\d+|X|Y)_.*", "\\1", arms),
+    chr_arm = gsub(".*_(p|q)", "\\1", arms)
+  )
+
+# Step 2: Convert chromosome numbers to numeric, handling X and Y chromosomes
+arms_long <- arms_long %>%
+  mutate(
+    chr_num = case_when(
+      chr_num == "X" ~ 23,
+      chr_num == "Y" ~ 24,
+      TRUE ~ as.numeric(chr_num)
+    )
+  )
+```
+
+
+## Get stats to see if arms' gain and losses are significantly more frequent to what is expected by chance (taking overall gain/losses  proportion across all arms)
+
+```{r}
+# Calculate total number of samples
+total_samples <- n_distinct(arms_long$ID)
+
+# Calculate gains and losses proportions for each arm
+arm_summary <- arms_long %>%
+  group_by(arms) %>%
+  summarise(
+    gains = sum(cna > 0.2, na.rm = TRUE),
+    losses = sum(cna < -0.2, na.rm = TRUE),
+    total = n_distinct(ID)
+  ) %>%
+  mutate(
+    gain_prop = gains / total,
+    loss_prop = losses / total
+  )
+
+# Rank arms by gain proportion
+most_frequent_gains <- arm_summary %>%
+  arrange(desc(gain_prop))
+
+# Rank arms by loss proportion
+most_frequent_losses <- arm_summary %>%
+  arrange(desc(loss_prop))
+
+# View top 10 most frequent gains and losses
+top_gains <- head(most_frequent_gains, 10)
+top_losses <- head(most_frequent_losses, 10)
+
+# Calculate overall gain and loss proportions
+overall_gain_prop <- sum(arm_summary$gains) / (total_samples * nrow(arm_summary))
+overall_loss_prop <- sum(arm_summary$losses) / (total_samples * nrow(arm_summary))
+
+# Perform binomial tests for gains
+arm_summary <- arm_summary %>%
+  rowwise() %>%
+  mutate(
+    gain_p_value = binom.test(
+      x = gains,
+      n = total,
+      p = overall_gain_prop,
+      alternative = "greater"
+    )$p.value,
+    loss_p_value = binom.test(
+      x = losses,
+      n = total,
+      p = overall_loss_prop,
+      alternative = "greater"
+    )$p.value
+  )
+
+# Adjust p-values for multiple testing
+arm_summary <- arm_summary %>%
+  mutate(
+    gain_p_adj = p.adjust(gain_p_value, method = "BH"),
+    loss_p_adj = p.adjust(loss_p_value, method = "BH")
+  )
+
+# Identify significant gains and losses
+significant_gains <- arm_summary %>%
+  filter(gain_p_adj < 0.01) %>%
+  arrange(gain_p_adj)
+
+significant_gains
+
+significant_losses <- arm_summary %>%
+  filter(loss_p_adj < 0.01) %>%
+  arrange(loss_p_adj)
+
+significant_losses
+
+```
+
+
+
+
+## compute the same statistics but per subtype
+
+Investigate whether gain/loss in arms are specific for one subtype compared to other subtypes (fisher exact tests)
+
+```{r}
+# Load necessary packages
+library(dplyr)
+
+
+# Corrected function to perform Fisher's exact test for a given arm and subtype
+fisher_test_arm_subtype <- function(data, arm, subtype_of_interest, alteration_type = c("Gain", "Loss"), threshold = 0.2) {
+  alteration_type <- match.arg(alteration_type)
+  
+  # Subset data for the specific arm
+  data_arm <- data[data$arms == arm,]
+  
+  # Define alteration condition based on type, within data_arm
+  if (alteration_type == "Gain") {
+    alteration_condition <- data_arm$cna > threshold
+  } else {
+    alteration_condition <- data_arm$cna < -threshold
+  }
+
+  # Create variables indicating presence of alteration and subtype membership
+  data_arm <- data_arm %>%
+    mutate(
+      alteration = ifelse(alteration_condition, "Altered", "Not_Altered"),
+      subtype_group = ifelse(subtype == subtype_of_interest, subtype_of_interest, "Other")
+    )
+  
+  # Create the contingency table
+  contingency_table <- table(data_arm$alteration, data_arm$subtype_group)
+  
+  # Check if the table has the correct dimensions
+  if (all(dim(contingency_table) == c(2, 2))) {
+    # Perform Fisher's exact test
+    fisher_result <- fisher.test(contingency_table)
+    
+    # Return the results
+    return(data.frame(
+      arm = arm,
+      subtype = subtype_of_interest,
+      alteration_type = alteration_type,
+      p_value = fisher_result$p.value,
+      odds_ratio = fisher_result$estimate
+    ))
+  } else {
+    # Return NA if the contingency table doesn't have both categories
+    return(data.frame(
+      arm = arm,
+      subtype = subtype_of_interest,
+      alteration_type = alteration_type,
+      p_value = NA,
+      odds_ratio = NA
+    ))
+  }
+}
+
+# Get the list of unique arms and subtypes
+arms_list <- unique(arms_long$arms)
+subtypes_list <- unique(arms_long$subtype)
+
+# Remove NA subtypes if present
+subtypes_list <- subtypes_list[!is.na(subtypes_list)]
+
+# Initialize an empty data frame to store results
+fisher_results <- data.frame()
+
+# Loop over each alteration type
+for (alteration in c("Gain", "Loss")) {
+  # Loop over each arm
+  for (arm in arms_list) {
+    # Loop over each subtype
+    for (subtype in subtypes_list) {
+      # Perform Fisher's exact test for the current arm, subtype, and alteration
+      result <- fisher_test_arm_subtype(
+        data = arms_long,
+        arm = arm,
+        subtype = subtype,
+        alteration_type = alteration,
+        threshold = 0.2  # Adjust threshold if necessary
+      )
+      # Append the result to the results data frame
+      fisher_results <- rbind(fisher_results, result)
+    }
+  }
+}
+
+
+# Adjust p-values using the Benjamini-Hochberg method
+fisher_results <- fisher_results %>%
+  mutate(
+    p_adj = p.adjust(p_value, method = "BH")
+  )
+
+# View significant results (e.g., p_adj < 0.05)
+significant_results <- fisher_results %>%
+  filter(!is.na(p_value) & p_value < 0.01) %>%
+  arrange(p_value)
+
+# View the significant results
+significant_results
+
+
+```
+
+
+

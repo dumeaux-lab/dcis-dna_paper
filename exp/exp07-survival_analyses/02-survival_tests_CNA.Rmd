@@ -1,0 +1,279 @@
+---
+title: "survival CNA"
+author: "Noor Rizvi"
+date: "2025-02-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyr)
+library(dplyr)
+library(tibble)
+library(survival)
+library(survminer)
+library(purrr)
+library(pheatmap)
+library(cluster)
+
+```
+
+
+```{r}
+
+cytoband <- read.table("/path/to/Rdata/output/exp06/cnapp/region_analyses/cytobands/cna_profile_Cytobands_by_ID2024-09-12 10_47_01.867477.tsv", sep="\t", header = TRUE, row.names = 1)
+
+# Format cytoband data
+cytoband_long <- cytoband %>%
+  rownames_to_column("cytoband") %>%
+  pivot_longer(
+    cols = -cytoband,
+    names_to = "Tumor_Sample_Barcode",
+    values_to = "value"
+  )
+
+# Gain loss indicators
+cytoband_long$gain <- cytoband_long$value>0
+cytoband_long$loss <- cytoband_long$value<0
+
+# Merge with clinical data
+# Rename the 'index' column if needed
+cytoband_long <- left_join(cytoband_long, cl)
+
+```
+
+
+```{r}
+
+# Recode 'Low' grade as 'Moderate' in 'nugradef2'
+cytoband_long$nugradef2 <- ifelse(cytoband_long$nugradef=="Low", "Moderate", cytoband_long$nugradef)
+
+# Function to perform cox and survival analysis a single cytoband
+analyze_cytoband <- function(data) {
+  cytoband <- unique(data$cytoband)
+  n_gain <- sum(data$gain, na.rm = TRUE)
+  n_loss <- sum(data$loss, na.rm = TRUE)
+  
+  
+  # Kaplan-Meier and Cox model for gain (if ≥5 gains)
+  gain_analysis <- if(n_gain >= 5) {tryCatch({
+    surv_fit_gain <- survfit(Surv(time.10, event.10.chr) ~ gain, data = data)
+    plot_gain <- ggsurvplot(
+      surv_fit_gain,
+      data = data,
+      pval = TRUE,
+      conf.int = TRUE,
+      risk.table = TRUE,
+      xlab = "Time",
+      ylab = "Survival probability",
+      title = paste("Kaplan-Meier Curve for", cytoband, "(Gain)")
+    )
+    cox_model_gain <- coxphf(Surv(time.10, event.10.chr) ~ gain + nugradef, data = data)
+    list(plot = plot_gain, cox_model = cox_model_gain)
+  }, error = function(e) NULL)
+  } else NULL
+  
+  # Kaplan-Meier and Cox model for loss (if ≥5 losses)
+  loss_analysis <- if(n_loss >= 5) {tryCatch({
+    surv_fit_loss <- survfit(Surv(time.10, event.10.chr) ~ loss , data = data)
+    plot_loss <- ggsurvplot(
+      surv_fit_loss,
+      data = data,
+      pval = TRUE,
+      conf.int = TRUE,
+      risk.table = TRUE,
+      xlab = "Time",
+      ylab = "Survival probability",
+      title = paste("Kaplan-Meier Curve for", cytoband, "(Loss)")
+    )
+    cox_model_loss <- coxphf(Surv(time.10, event.10.chr) ~ loss + nugradef, data = data)
+    list(plot = plot_loss, cox_model = cox_model_loss)
+  }, error = function(e) NULL)
+  } else NULL
+  
+  # Only return results if either gain or loss analysis was performed
+  if(is.null(gain_analysis) && is.null(loss_analysis)) {
+    return(NULL)
+  }
+  
+  return(list(
+    cytoband = cytoband,
+    gain = gain_analysis,
+    loss = loss_analysis
+  ))
+}
+
+# Apply analysis function to each cytoband group
+results <- cytoband_long %>%
+  group_by(cytoband) %>%
+  group_map(~analyze_cytoband(.x), .keep = TRUE)
+
+
+```
+
+
+```{r}
+
+# Function to safely extract gain and loss p-values from Cox models
+safe_extract_info <- function(x) {
+  tryCatch({
+    gain_pvalue <- summary(x$gain$cox_model)$prob["gainTRUE"]
+    loss_pvalue <- summary(x$loss$cox_model)$prob["lossTRUE"]
+    
+    data.frame(
+      cytoband = x$cytoband,
+      gain_pvalue = gain_pvalue,
+      loss_pvalue = loss_pvalue
+    )
+  }, error = function(e) NULL)
+}
+
+# Extract p-values for all cytobands
+cytoband_pvalues <- map_dfr(results, safe_extract_info)
+
+
+# Filter significant cytobands based on p-value < 0.05 and positive coefficient
+significant_cytobands <- cytoband_pvalues %>%
+  mutate(
+    gain_coef = map_dbl(seq_len(nrow(.)), function(i) {
+      if (i <= length(results)) {
+        coefs <- coef(results[[i]]$gain$cox_model)
+        if ("gainTRUE" %in% names(coefs)) {
+          coefs["gainTRUE"]
+        } else {
+          NA_real_
+        }
+      } else {
+        NA_real_
+      }
+    }),
+    loss_coef = map_dbl(seq_len(nrow(.)), function(i) {
+      if (i <= length(results)) {
+        coefs <- coef(results[[i]]$loss$cox_model)
+        if ("lossTRUE" %in% names(coefs)) {
+          coefs["lossTRUE"]
+        } else {
+          NA_real_
+        }
+      } else {
+        NA_real_
+      }
+    })
+  ) %>%
+  filter(
+    (!is.na(gain_pvalue) & gain_pvalue < 0.05 & gain_coef > 0) |
+    (!is.na(loss_pvalue) & loss_pvalue < 0.05 & loss_coef > 0)
+  )
+
+print(significant_cytobands)
+```
+
+```{r}
+
+# Create matrices for gain 
+gain_matrix <- cytoband_long %>%
+  filter(cytoband %in% significant_cytobands$cytoband[significant_cytobands$gain_pvalue < 0.05]) %>%
+  dplyr::select(Tumor_Sample_Barcode, cytoband, gain) %>%
+  mutate(gain = as.logical(gain)) %>%
+  pivot_wider(
+    names_from = cytoband, 
+    values_from = gain, 
+    values_fill = FALSE
+  ) %>%
+  column_to_rownames("Tumor_Sample_Barcode")
+
+# Convert to matrix
+gain_matrix <- as.matrix(gain_matrix)
+
+# Convert logical to integer (0/1)
+gain_matrix <- gain_matrix * 1
+
+# Create matrices for loss
+loss_matrix <- cytoband_long %>%
+  filter(cytoband %in% significant_cytobands$cytoband[significant_cytobands$loss_pvalue < 0.05]) %>%
+  dplyr::select(Tumor_Sample_Barcode, cytoband, loss) %>%
+  mutate(loss = as.logical(loss)) %>%
+  pivot_wider(
+    names_from = cytoband, 
+    values_from = loss, 
+    values_fill = FALSE
+  ) %>%
+  column_to_rownames("Tumor_Sample_Barcode")
+
+# Convert to matrix
+loss_matrix <- as.matrix(loss_matrix)
+
+# Convert logical to integer (0/1)
+loss_matrix <- loss_matrix * 1
+
+# Align gain and loss mattrices
+align_matrices <- function(gain_mat, loss_mat) {
+  all_cytobands <- union(colnames(gain_mat), colnames(loss_mat))
+  all_samples <- union(rownames(gain_mat), rownames(loss_mat))
+  
+  # Initialize aligned matrices 
+  aligned_gain <- matrix(0, nrow = length(all_samples), ncol = length(all_cytobands))
+  aligned_loss <- matrix(0, nrow = length(all_samples), ncol = length(all_cytobands))
+  
+  rownames(aligned_gain) <- rownames(aligned_loss) <- all_samples
+  colnames(aligned_gain) <- colnames(aligned_loss) <- all_cytobands
+  
+  # Fill aligned matrices with original data
+  aligned_gain[rownames(gain_mat), colnames(gain_mat)] <- gain_mat
+  aligned_loss[rownames(loss_mat), colnames(loss_mat)] <- loss_mat
+  
+  list(gain = aligned_gain, loss = aligned_loss)
+}
+
+aligned_matrices <- align_matrices(gain_matrix, loss_matrix)
+gain_matrix <- aligned_matrices$gain
+loss_matrix <- aligned_matrices$loss
+
+# Combine matrices
+combined_matrix <- gain_matrix - loss_matrix
+
+# Create a custom color palette
+color_palette <- colorRampPalette(c("blue", "white", "red"))(3)
+
+# Clinical data for annotations
+cl.df <- cl[ , c('event.10.chr','age', 'nugradef','subtype', 'GCS', 'time.10')]
+col.clinical <- list()
+col.clinical[["subtype"]] <- c(LumA="blue4", LumB="deepskyblue", Basal="firebrick2", Normal="green4", Her2="hotpink2", "NA"="darkgrey")
+col.clinical[["age"]] <- c(over60="#3182bd", "50-60"="#9ecae1", under50="#deebf7")
+col.clinical[["nugradef"]] <- c(High="#de2d26", Moderate="#fc9272", Low="#fee0d2")
+col.clinical[["event.10.chr"]] <- c("0"="#fee0b6", "1"="#b35806")
+col.clinical[["GCS"]] <- viridisLite::viridis(n=100, option="G", direction = -1)
+
+# Prepare for plotting
+plot.df <- t(combined_matrix)
+
+# Convert combined_matrix to binary (0 for loss, 1 for no change or gain)
+binary_matrix <- ifelse(plot.df >= 0, 1, 0)
+
+# Calculate distance matrix using binary metric
+dist_matrix <- dist(t(binary_matrix), method = "binary")
+
+# Create the heatmap with custom clustering
+pdf("../../figures/exp07/heatmap_significant_cna.pdf")
+pheatmap(
+  plot.df,
+  color = color_palette,
+  breaks = c(-1, -0.5, 0.5, 1),
+  show_colnames = FALSE,
+  annotation_colors = col.clinical,
+  annotation_col = cl.df,
+  main = "",
+  legend_labels = c("Loss", "No Change", "Gain"),
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  clustering_method = "ward.D",
+  clustering_distance_cols = "minkowski",
+  fontsize = 8
+)
+dev.off()
+
+
+```

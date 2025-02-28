@@ -1,0 +1,78 @@
+---
+title: "clinical enrichment tests"
+author: "Noor Rizvi"
+date: "2025-02-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(maftools)
+```
+
+
+```{r}
+
+# Load in data
+all.paired <- readRDS("/path/to/metadata/all.paired.rds")
+final_df <- final_df[final_df$tissue=="primary",]
+dcis <- readRDS("/path/to/Rdata/output/exp04/dcis.rds")
+
+```
+
+```{r}
+
+# Define colour mappings
+col.clinical <- list()
+col.clinical[["subtype"]] <- c(Basal="firebrick2", Her2="hotpink2", LumA="blue4", LumB="deepskyblue", Normal="green4", "NA"="grey")
+col.clinical[["age"]] <- c("50-60"="#9ecae1", under50="#deebf7", over60="#3182bd")
+col.clinical[["nugradef"]] <- c(Moderate="#fc9272", High="#de2d26")
+col.clinical[["mfocf"]] <- c(Present="#c51b8a", Absent="#fa9fb5", UTD="grey")
+
+
+```
+
+Function to investigate mutated genes associated with specific clinico-pathological variables. Uses the function `clinicalEnrchment()` from the maftools R/Bioconductor package
+
+```{r}
+clinical.enrich.test <- function(maf_data, clin.variable, clin.subset = NULL, 
+                           min.mut = 10, pval = 0.001, output.path, cl.colors){
+  if (!is.null(clin.subset)){
+    sub.maf <- subsetMaf(maf_data, clinQuery = clin.subset)}
+  else {sub.maf <- maf_data}
+  
+  maf.ce = clinicalEnrichment(maf = sub.maf, clinicalFeature = clin.variable, 
+                              minMut = min.mut)
+  
+  if(nrow(maf.ce$groupwise_comparision[p_value < 0.001])>0){
+    pdf(paste0(output.path, "/enrichment_", clin.variable, ".pdf"))
+    plotEnrichmentResults(enrich_res = maf.ce, pVal = pval, geneFontSize = 1, annoFontSize = 0.8, cols = cl.colors)
+    dev.off()
+  }
+  
+  return(maf.ce)
+}
+```
+
+
+```{r}
+
+cl.test <- list()
+
+# Grade
+cl.test$nugradef <- clinical.enrich.test(maf_data = dcis, clin.variable = "nugradef", clin.subset = "nugradef %in% c('High', 'Moderate')", 
+                           min.mut = 10, pval = 0.001, cl.colors = col.clinical$nugradef, output.path="../../figures/exp03/")
+# Age
+cl.test$age <- clinical.enrich.test(maf_data = dcis, clin.variable = "age", clin.subset = NULL, 
+                           min.mut = 5, pval = 0.001, cl.colors = col.clinical$age, output.path="../../figures/exp03/")
+
+# Subtype
+cl.test$subtype <- clinical.enrich.test(maf_data = dcis, clin.variable = "subtype", clin.subset = "subtype %in% c('LumA', 'LumB', 'Her2', 'Basal', 'Normal')", 
+                           min.mut = 5, pval = 0.001, cl.colors = col.clinical$subtype, output.path="../../figures/exp03/")
+
+
+```

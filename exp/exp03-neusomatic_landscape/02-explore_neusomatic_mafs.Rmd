@@ -1,0 +1,183 @@
+---
+title: "explore_neusomatic_mafs"
+author: "Noor Rizvi"
+date: "2025-02-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(GenVisR)
+library(dplyr)
+library(tidyr)
+library(openxlsx)
+library(ggplot2)
+library(maftools)
+library(dplyr)
+library(BSgenome.Hsapiens.UCSC.hg38)
+
+```
+
+
+```{r}
+
+# Set directories
+datdir <- "/path/to/bc_dcis/DNAseq_allBatches/neusomatic2"
+sn.path <- list.dirs(datdir, full.names = TRUE, recursive = FALSE)
+sn.tumor <- list.dirs(datdir, full.names = FALSE, recursive = FALSE)
+
+# Read MAF files
+files <-file.path(sn.path,"work_postcall_ensemble/NeuSomatic_ensemble_annot.maf")
+mafs<- lapply(files, function(x) {
+  maf <- read.table(x, sep = '\t', header = TRUE, comment.char="#",
+                  na.strings=".", stringsAsFactors=FALSE,
+                  quote="", fill=FALSE)
+})
+mafs <- do.call(rbind,mafs)
+
+```
+
+
+```{r}
+
+# Standardize variant classification names
+mafs$Variant_Classification <- ifelse(mafs$Variant_Classification=="Splice_Region", "Splice_Site", mafs$Variant_Classification)
+
+# Remove flag genes
+mafs.filtered <- mafs[!(mafs$Hugo_Symbol %in% maftools:::flags()), ]
+
+# Mutation proportions per sample
+df <- as.data.frame(table(mafs.filtered$Tumor_Sample_Barcode, mafs.filtered$FILTER))
+totals <- df %>% 
+  group_by(Var1) %>% 
+  summarise(Total = sum(Freq))
+df_with_proportions <- df %>% 
+  left_join(totals, by = "Var1") %>% 
+  mutate(Proportion = Freq / Total)
+
+# Summary statistics for proportions and counts
+summary_stats <- df_with_proportions %>% 
+  group_by(Var2) %>% 
+  summarise(
+    Mean = mean(Proportion, na.rm = TRUE),
+    Median = median(Proportion, na.rm = TRUE),
+    SD = sd(Proportion, na.rm = TRUE),
+    Min = min(Proportion, na.rm = TRUE),
+    Max = max(Proportion, na.rm = TRUE)
+  )
+
+summary_stats_count <- df_with_proportions %>% 
+  group_by(Var2) %>% 
+  summarise(
+    Mean = mean(Freq, na.rm = TRUE),
+    Median = median(Freq, na.rm = TRUE),
+    SD = sd(Freq, na.rm = TRUE),
+    Min = min(Freq, na.rm = TRUE),
+    Max = max(Freq, na.rm = TRUE)
+  )
+
+```
+
+
+```{r}
+
+# Plot VAF distribution
+p1 <- ggplot(mafs.filtered, aes(x = t_AF, fill = FILTER)) + 
+  geom_histogram(position = "identity", alpha = 0.5) +
+  labs(x = "Variant allele frequency",
+       y = "Count") +
+  theme_bw()
+
+ggsave("../../figures/exp03/vafs_filter.pdf", width =6, height = 3,p1)  
+
+```
+
+
+```{r}
+
+# Filter high confiedence mutations 
+mafs.filtered.pass <- mafs.filtered[mafs.filtered$FILTER %in% "PASS",]
+mafs.filtered.pass2 <- mafs.filtered.pass[mafs.filtered.pass$t_AF>0.1,]
+saveRDS(mafs.filtered.pass2, "/path/to/Rdata/output/exp04/mafs_flags_filtered_pass_vaf0.1.rds")
+
+# Validate mutation classification
+set.seed(383)
+accept <- c("Nonsense_Mutation", "Frame_Shift_Ins", "Frame_Shift_Del", "Translation_Start_Site", "Splice_Site", "Nonstop_Mutation", "In_Frame_Ins", "In_Frame_Del", "Missense_Mutation", "5'Flank", "3'Flank", "5'UTR", "3'UTR", "RNA", "Intron", "IGR", "Silent", NA)
+unique(mafs.filtered.pass2$Variant_Classification)[!unique(mafs.filtered.pass2$Variant_Classification) %in% accept]
+
+# Non-synonymous mutations per sample
+df <- as.data.frame(table(mafs.filtered.pass2$Tumor_Sample_Barcode, mafs.filtered.pass2$FILTER))
+df <- df[, c("Var1", "Freq")]
+colnames(df) <- c("Tumor_Sample_Barcode", "n_nonsynonymous_mut")
+
+```
+
+
+```{r}
+
+# Load metadata and add n_nonsynonymous_mutations in metadata
+paired.dna <- readRDS("/path/to/metadata/paired.dna.rds")
+
+all.paired <- dplyr::left_join(paired.dna, df)
+saveRDS(all.paired, "/path/to/metadata/all.paired.rds")
+
+# Read MAF object
+dcis <- read.maf(maf = mafs.filtered.pass2, clinicalData = all.paired)
+saveRDS(dcis, "/path/to/Rdata/output/exp04/dcis.rds")
+
+# Sample summary
+getSampleSummary(dcis)
+samples <- getSampleSummary(dcis)
+summary(getSampleSummary(dcis)$total)
+sd(getSampleSummary(dcis)$total)
+sum(samples$Missense_Mutation)/sum(samples$total)
+
+
+# Gene summary
+genes <- getGeneSummary(dcis)
+dim(getGeneSummary(dcis))
+
+# Plot variants per sample
+plotmafSummary(maf = dcis, rmOutlier = TRUE, addStat = 'median', dashboard = FALSE, titvRaw = FALSE)
+
+
+```
+
+
+```{r}
+
+# Variant classification colours
+vc_cols = RColorBrewer::brewer.pal(n = 8, name = 'Paired')
+names(vc_cols) = c(
+  'Frame_Shift_Del',
+  'Missense_Mutation',
+  'Nonsense_Mutation',
+  'Multi_Hit',
+  'Frame_Shift_Ins',
+  'In_Frame_Ins',
+  'Splice_Site',
+  'In_Frame_Del'
+)
+
+# Compute tumor burden (Agilent sure select kit targets ~50MB of the coding regions (exons))
+tmb <- tmb(dcis, captureSize = 50, logScale = TRUE)
+dcis@clinical.data <- dplyr::left_join(dcis@clinical.data, tmb)
+
+# Oncoplot top 50 frequently mutated genes
+col.clinical <- list()
+col.clinical[["subtype"]] <- c(LumA="blue4", LumB="deepskyblue", Basal="firebrick2", Normal="green4", Her2="hotpink2", "NA"="darkgrey")
+col.clinical[["age"]] <- c(over60="#3182bd", "50-60"="#9ecae1", under50="#deebf7")
+col.clinical[["nugradef"]] <- c(High="#de2d26", Moderate="#fc9272", Low="#fee0d2")
+
+pdf("../../figures/exp04/oncoplot_top50.pdf", width =12)
+oncoplot(maf = dcis, top = 50, colors = vc_cols, clinicalFeatures = c('age', 'nugradef','subtype'),annotationColor=col.clinical, sortByAnnotation = TRUE, fontSize = 0.3,  gene_mar = 8, showTitle = FALSE)
+dev.off()
+
+
+```
+
+

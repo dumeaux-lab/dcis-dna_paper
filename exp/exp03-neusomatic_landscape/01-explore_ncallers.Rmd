@@ -1,0 +1,101 @@
+---
+title: "explore_ncallers"
+author: "Vanessa Dumeaux"
+date: "2024-03-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(limma)
+library(ggplot2)
+library(RColorBrewer)
+library(dplyr)
+
+```
+
+## Variant outputs
+
+```{r}
+
+# Directory for Neusomatic results 
+datdir <- "/path/to/bc_dcis/DNAseq_allBatches/neusomatic2"
+
+ # Directories for tumor-normal pairs
+sn.path <- list.dirs(datdir, full.names = TRUE, recursive = FALSE)
+sn.tumor <- list.dirs(datdir, full.names = FALSE, recursive = FALSE)
+
+
+# Load ensemble mutation calls 
+dat.ensemble <- list()
+dat.ensemble <- lapply(sn.path, function(x){
+  tb <- read.table(file.path(x, "ensemble_ann.tsv"), sep = "\t", stringsAsFactors = FALSE, header =  TRUE)
+  return(tb)
+})
+names(dat.ensemble) <- sn.tumor
+
+# Count mutations that are not in COSMIC or dbSNP databases
+calls.union <- sapply(dat.ensemble, function(x){
+  tb <- x[x$if_COSMIC==0 & x$if_dbsnp==0,]
+  ret <- nrow(tb)
+  return(ret)
+})
+
+# Process mutation calls per variant caller 
+dat.callers <- lapply(1:length(dat.ensemble), function(x){
+  tb <- dat.ensemble[[x]]
+  
+  tb$if_MuSE <- ifelse(tb$MuSE_Tier==0, 0, 1)
+  tb$if_VarDict_binary <- as.numeric(ifelse(tb$if_VarDict==0.5, 1, 0))
+  tb.full <- tb
+  tb <- tb[, colnames(tb) %in% c("if_MuTect", "if_Strelka", "if_SomaticSniper", "if_VarDict_binary", "if_VarScan2","if_MuSE")]
+  
+  # Count mutations per caller
+  n.perCallers <- apply(tb, 2, sum)
+  nCallers.perMut <- apply(tb, 1, sum)
+  
+  # Remove mutations not called by any caller
+  tb <- tb[!nCallers.perMut==0,]
+  nCallers.perMut <- apply(tb, 1, sum)
+  union <- nrow(tb)
+   # Venn diagram data  
+  df.venn <- vennCounts(tb)
+  plot.venn <- vennCounts(tb[, -grep("if_SomaticSniper", colnames(tb))])
+  #vennDiagram(plot.venn, main = sn[x])
+  return(list(tb.full=tb.full, tb=tb, df.venn = df.venn, unionCallers=union, n.perCallers=n.perCallers, nCallers.perMut=nCallers.perMut))
+})
+
+names(dat.callers) <- sn.tumor
+
+# Count mutations per number of caller
+ncalls <- lapply(1:length(dat.callers), function(x){
+  ncalls <- dat.callers[[x]]$nCallers.perMut
+  ret <- data.frame(ncalls=dat.callers[[x]]$nCallers.perMut)
+  ret.df <- plyr::count(ret)
+  ret.df$Sample <- sn.tumor[x]
+  ret.df$Tissue <- ifelse(grepl("_D", ret.df$Sample), "Tumor", "Stroma")
+   return(ret.df)
+})
+
+# Generate barplot of mutations per sample
+p1 <- ggplot(bind_rows(ncalls, .id="df"), aes(y=freq, x=reorder(Sample, -freq), fill=as.character(ncalls))) + 
+  scale_fill_manual(values = c("#c994c7", "#df65b0", "#e7298a", "#ce1256", "#91003f", "#45001e")) + 
+  geom_bar(position="stack", stat="identity") +
+  labs(x = "Samples (n=147)",  # Set the x-axis title
+       y = "# mutations",  # Set the y-axis title
+       fill = "n callers\n") +
+  theme_bw() + 
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 10),
+         axis.title.x = element_text(size = 10),
+         axis.title.y = element_text(size = 10),
+         legend.title = element_text(size = 10),   # Make legend title smaller
+        legend.text = element_text(size = 10))  # Customize y-axis title appearance (if needed)
+
+ggsave("../../figures/exp04/ncallers.pdf", width =6, height = 3,p1)  
+
+
+```

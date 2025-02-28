@@ -1,0 +1,281 @@
+---
+title: "Preprocessing exome data"
+author: "Vanessa Dumeaux"
+date: "2025-02-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(R.utils)
+library(BiocParallel)
+
+
+ncores <- 10
+register(MulticoreParam(workers=ncores))
+
+datdir <- "path_to_fastq_files"
+
+files <- list.files(datdir, pattern = ".fastq.gz", full.names = TRUE, recursive = TRUE)
+
+reads1 <- files[grep("_R1_", files)]
+reads2 <- files[grep("_R2_", files)]
+
+
+# sample.names: character vector of unique sample names extracted from file names
+
+
+```
+
+## Run fastqc on input files
+```{r}
+
+fastqc <-"path_to_fastqc_output_folder"
+if(!file.exists(fastqc)){
+  dir.create(fastqc, showWarnings = FALSE) 
+}
+
+fastqc.files <- function(x){
+  system(capture.output(
+    cat(file.path(path_to_software_folder, "/FastQC/fastqc"), x, "--outdir=", fastqc)
+    ))
+}
+
+bplapply(files, fastqc.files)
+```
+
+
+## Read trimming with trimmomatic
+```{r}
+
+trimmed <-"path_to_trimmed_output_folder"
+if(!file.exists(trimmed)){
+  dir.create(trimmed, showWarnings = FALSE) 
+}
+
+trim.reads <- function(x){
+  system(capture.output(
+    cat("java -jar", file.path(path_to_software_folder, "Trimmomatic-0.39/trimmomatic-0.39.jar PE"),
+        raw.read1[grep(x, raw.read1)], raw.read2[grep(x, raw.read2)],
+        file.path(trimmed, paste0(x, "_paired1.fastq")),file.path(trimmed, paste0(x, "_unpaired1.fastq")),
+        file.path(trimmed, paste0(x, "_paired2.fastq")),file.path(trimmed, paste0(x, "_unpaired2.fastq")),
+        paste0("ILLUMINACLIP:", file.path(path_to_software_folder, "Trimmomatic-0.39/adapters/TruSeq3-PE.fa:2:20:10:2:keepBothReads LEADING:10 TRAILING:10 SLIDINGWINDOW:4:20"))
+  )))
+}
+
+
+bplapply(sample.names, trim.reads)
+```
+
+## Alignment using bwa
+
+```{r}
+bwa <- "path_to_aligned_output_folder"
+if(!file.exists(bwa)){
+  dir.create(bwa, showWarnings = FALSE) 
+}
+
+reads1 <- list.files(trimmed, pattern="_paired1.fastq", full.names = TRUE)
+reads2 <- list.files(trimmed, pattern="_paired2.fastq", full.names = TRUE)
+unpaired <- list.files(trimmed, pattern="unpaired1.fastq|unpaired2.fastq", full.names = TRUE)
+
+
+bwa.align<-function(x){
+  system(capture.output(
+    cat(file.path(path_to_software_folder, "bwa-0.7.17/bwa mem -t 10"),  file.path(path_to_db_folder,"gatk_hg38/Homo_sapiens_assembly38.fasta"),
+        reads1[grep(x, reads1)], reads2[grep(x, reads2)], ">", file.path(bwa, paste0(x, ".sam")))
+  ))
+}
+
+bplapply(sample.names,bwa.align)
+
+```
+
+# Sam to bam conversion and add read groups annotations required for gatk preprocessing step
+```{r}
+
+ samToBam <- function(x){
+   system(capture.output(
+     cat(file.path(path_to_software_folder,"samtools-1.9/samtools sort -@ 8 -o "), file.path(bwa, paste0(x,".bam")), 
+         file.path(bwa, paste0(x, ".sam")))
+   ))
+ }
+
+
+bplapply(sample.names,samToBam)
+
+addReadGroups.tumor <- function(x){
+    system(capture.output(
+                          cat("java -jar", file.path(path_to_software_folder, "picard.jar"),  "AddOrReplaceReadGroups INPUT=",
+                              x,"OUTPUT=",gsub(".bam","readGroups.bam", x),
+                              "SORT_ORDER=coordinate ID=id190726_A00469_0053 LB=lib190726_A00469_0053 PL=Illumina PU=run190726_A00469_0053 SM=TUMOR CN=pilot")
+                          ))
+}
+
+addReadGroups.normal <- function(x){
+    system(capture.output(
+                          cat("java -jar", file.path(path_to_software_folder, "picard.jar"), "AddOrReplaceReadGroups INPUT=",
+                              x,"OUTPUT=",gsub(".bam","readGroups.bam", x),
+                              "SORT_ORDER=coordinate ID=id190726_A00469_0053 LB=lib190726_A00469_0053 PL=Illumina PU=run190726_A00469_0053 SM=NORMAL CN=pilot")
+                          ))
+}
+
+bamfiles <- list.files(bwa, pattern=".bam$", full.names = TRUE)
+
+bplapply(bamfiles[grep("_P_PE|_T_PE", bamfiles)], addReadGroups.tumor)
+bplapply(bamfiles[grep("_R_PE", bamfiles)], addReadGroups.normal)
+
+
+
+```
+
+# Mark duplicates, index bam and perform base quality score recalibration (gatk preprocessing)
+```{r}
+readGroups <- list.files(bwa, pattern = "readGroups.bam", full.names = TRUE)
+
+markDup <- function(x){
+      system(capture.output(cat("java -jar", file.path(path_to_software_folder, "picard.jar"), "MarkDuplicates I=", 
+                                x, "O=", gsub(".bam", "Mark.bam", x), "M=", gsub(".bam", ".dup.metrics.txt", x))
+))
+}
+bplapply(readGroups, markDup)
+
+
+marked <-  list.files(bwa, pattern = "readGroupsMark.bam", full.names = TRUE)
+indexBam <- function(x){
+    system(capture.output(
+                          cat(file.path(path_to_software_folder, "samtools-1.9/samtools index"), x)
+                          ))
+}
+bplapply(marked, indexBam)
+
+gatk <-"path_to_gatk_output_folder"
+if(!file.exists(gatk)){
+    dir.create(gatk, showWarnings = FALSE) 
+ }
+ 
+ gatk.baseRecalibrator<- function(x){
+       system(capture.output(
+                             cat(file.path(path_to_software_folder, "gatk-4.1.4.1/gatk"),  
+                                 "--java-options \'-DGATK_STACKTRACE_ON_USER_EXCEPTION=true\' BaseRecalibrator -R", file.path(path_to_db_folder,"gatk_hg38/Homo_sapiens_assembly38.fasta"), 
+                                 "-I", file.path(bwa, paste0(x, "readGroupsMark.bam")),
+                                 "--known-sites", file.path(path_to_db_folder,"gatk_hg38/Homo_sapiens_assembly38.dbsnp138.vcf"),
+                                 "--known-sites", file.path(path_to_db_folder,"gatk_hg38/Mills_and_1000G_gold_standard.indels.hg38.vcf.gz"),
+                                 "--known-sites", file.path(path_to_db_folder,"gatk_hg38/Homo_sapiens_assembly38.known_indels.vcf.gz"),
+                                 "-ip 100 -L", file.path(path_to_db_folder,"/GRCh38/SureSelectHumanExonsv7/S31285117_hs_hg38/S31285117_Regions.bed"),
+                                 "-O", file.path(gatk, paste0(x, "recal.table")))
+       ))
+ }
+bplapply(sample.names, gatk.baseRecalibrator)
+
+gatk.applyRecalibration <- function(x){
+    system(capture.output(cat(file.path(path_to_software_folder, "gatk-4.1.4.1/gatk"),
+    "--java-options \'-DGATK_STACKTRACE_ON_USER_EXCEPTION=true\' ApplyBQSR -R", file.path(path_to_db_folder,"gatk_hg38/Homo_sapiens_assembly38.fasta"),
+    "-I", file.path(bwa, paste0(x, "readGroupsMark.bam")),
+    "--bqsr-recal-file", file.path(gatk, paste0(x, "recal.table")),
+    "-ip 100 -L", file.path(path_to_db_folder,"/GRCh38/SureSelectHumanExonsv7/S31285117_hs_hg38/S31285117_Regions.bed"),
+    "-O=", file.path(gatk, paste0(x, ".bam")))
+))
+}
+
+bplapply(sample.names, gatk.applyRecalibration)
+```
+
+# get QC stats
+
+```{r}
+gatk_metrics <- "path_to_gatk_metrics_output_folder"
+if(!file.exists(gatk_metrics)){
+  dir.create(gatk_metrics, showWarnings = FALSE) 
+}
+
+exome.stats.picard <- function(x){
+  system(capture.output(
+    cat("java -jar", file.path(path_to_software_folder, "picard-tools-1.131/picard.jar CollectMultipleMetrics"),
+    paste0("R=", file.path(path_to_db_folder,"gatk_hg38/Homo_sapiens_assembly38.fasta")), 
+    paste0("I=", file.path(gatk, paste0(x, ".bam"))),
+    paste0("O=",file.path(gatk_metrics, paste0(x, "_picardMetrics.txt")))
+    )
+  ))
+}
+bplapply(sample.names, exome.stats.picard)
+
+exome.flagstats <- function(x){
+  system(capture.output(
+    cat(file.path(path_to_software_folder, "samtools-1.9/samtools flagstat"), file.path(gatk, paste0(x, ".bam")), "-@ 12 >", 
+        file.path(gatk_metrics, paste0(x, "_flagstats.txt"))
+    )
+  ))
+}
+bplapply(sample.names, exome.flagstats)
+
+bplapply(sample.names, fastqc.files)
+
+
+qualimap <- function(x){
+    system(capture.output(
+                          cat(file.path(path_to_software_folder, "qualimap_v2.2.1/qualimap bamqc"), "-bam", file.path(gatk, paste0(x, ".bam")),
+                              "--java-mem-size=8G -outdir", file.path(gatk_metrics, paste0(x, "_qualimap")))))
+}
+bplapply(sample.names, qualimap)
+
+```
+
+
+# investigate percentage of anomalous reads
+```{r}
+flagstats <- read.table(file.path(gatk_metrics, "samtools-flagstat-dp.tsv"),
+                        sep="\t", header = TRUE, stringsAsFactors = FALSE)
+flagstats$Sample <- gsub("_PE.*", "",flagstats$Sample)
+colnames(flagstats) <- gsub("\\.", "_", colnames(flagstats))
+
+library(ggplot2)
+library(dplyr)
+library(forcats)
+
+p <- flagstats %>%
+  mutate(Sample = fct_reorder(Sample, Mate_mapped_to_different_chromosome)) %>%
+  ggplot( aes(x=Sample, y=Mate_mapped_to_different_chromosome)) +
+    geom_bar(stat="identity", fill="#f68060", alpha=.6, width=.6) +
+    coord_flip() +
+    ylab("Percent of paired reads with mate mapped to different chromosome") +
+    theme_bw()
+
+
+```
+
+# filter reads to keep only properly paired reads
+
+```{r}
+gatk_filtered <- "path_to_gatk_filtered_output_folder"
+if(!file.exists(gatk_filtered)){
+  dir.create(gatk_filtered, showWarnings = FALSE) 
+}
+
+filter.reads <- function(x){
+  system(capture.output(cat(file.path(path_to_software_folder, "samtools-1.9/samtools view"), "-b -f 2 -F 524", 
+                            file.path(gatk, paste0(x, ".bam")), ">", 
+                            file.path(gatk_filtered, paste0(x, ".bam")))
+  ))
+}
+
+bplapply(sample.names, filter.reads)
+
+```
+# Index filtered bam
+```{r}
+indexBam2 <- function(x){
+    system(capture.output(
+                          cat(file.path(path_to_software_folder, "samtools-1.9/samtools index"), file.path(gatk_filtered, paste0(x, ".bam")))
+                                  ))
+}
+
+bplapply(sample.names, indexBam2)
+
+```
+
+

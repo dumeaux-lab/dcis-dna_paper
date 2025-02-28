@@ -1,0 +1,293 @@
+---
+title: "CNV ASCAT"
+author: "Vanessa Dumeaux"
+date: "2024-06-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+Use https://github.com/VanLoo-lab/ASCAT.sc
+
+# Load libraries
+
+```{r}
+library(ASCAT)
+library(Biostrings)
+library(data.table)
+library(GenomicRanges)
+library(BiocParallel)
+```
+
+# Load data
+```{r}
+all.paired <- readRDS("/path/to/metadata/all.paired.rds")
+all.sn <- all.paired$sample_name[grep("_D", all.paired$sample_name)]
+
+tbams <- all.paired$files[grep("_D", all.paired$sample_name)]
+nbams <- all.paired$files[grep("_N|_S", all.paired$sample_name)]
+```
+
+# prepare ascat worksheet
+```{r}
+
+ascat_worksheet <- data.frame(Patient_ID=all.paired$patient.id[grep("_D", all.paired$sample_name)],
+                              Sample_ID=all.sn,
+                              Sample_file=tbams,
+                              Normal_ID=all.paired$sample_name[grep("_N|S", all.paired$sample_name)],
+                              Normal_file=nbams,
+                              Gender="XX")
+
+
+```
+
+#
+```{r}
+
+# Define the number of cores
+cores <- 8
+param <- MulticoreParam(workers = cores)
+
+target_bed <- "/path/to/db/GRCh38/SureSelectHumanExonsv7/S31285117_hs_hg38/S31285117_Regions_noheading.bed"
+
+process_sample <- function(i, ascat_worksheet, target_bed) {
+  ascat.prepareHTS(
+    tumourseqfile = ascat_worksheet$Sample_file[i],
+    normalseqfile = ascat_worksheet$Normal_file[i],
+    tumourname = ascat_worksheet$Sample_ID[i],
+    normalname = ascat_worksheet$Normal_ID[i],
+    allelecounter_exe = "/path/to/tools/bin/alleleCounter",
+    alleles.prefix = "/path/to/db/GRCh38/G1000_allelesAll_hg38/G1000_alleles_hg38_chr",
+    ref.fasta = "/path/to/db/gatk_hg38/Homo_sapiens_assembly38.fasta",
+    loci.prefix = "/path/to/db/GRCh38/G1000_lociAll_hg38/with_chr/G1000_loci_hg38_chr",
+    gender = "XX",
+    genomeVersion = "hg38",
+    BED_file = target_bed,
+    tumourLogR_file = paste0("/path/to/Rdata/output/exp06/output_ascat/", ascat_worksheet$Sample_ID[i], "_tumourLogR.txt"),
+    tumourBAF_file = paste0("/path/to/Rdata/output/exp06/output_ascat/", ascat_worksheet$Sample_ID[i], "_tumourBAF.txt"),
+    normalLogR_file = paste0("/path/to/Rdata/output/exp06/output_ascat/", ascat_worksheet$Sample_ID[i], "_normalLogR.txt"),
+    normalBAF_file = paste0("/path/to/Rdata/output/exp06/output_ascat/", ascat_worksheet$Sample_ID[i], "_normal_BAF.txt"),
+    nthreads = 8
+  )
+}
+
+
+# Assuming `ascat_worksheet` and `target_bed` are already defined
+prep_ascat <- bplapply(1:nrow(ascat_worksheet), process_sample, ascat_worksheet = ascat_worksheet,
+                       target_bed = target_bed, BPPARAM = param)
+
+```
+
+# Read data
+```{r}
+load_sample <- function(i){ 
+  ascat.loadData(Tumor_LogR_file = paste0("/path/to/Rdata/output/exp06/output_ascat/", ascat_worksheet$Sample_ID[i], "_tumourLogR.txt"), 
+                 Tumor_BAF_file = paste0("/path/to/Rdata/output/exp06/output_ascat/", ascat_worksheet$Sample_ID[i], "_tumourBAF.txt"),
+                 Germline_LogR_file = paste0("/path/to/Rdata/output/exp06/output_ascat/", ascat_worksheet$Sample_ID[i], "_normalLogR.txt"), 
+                 Germline_BAF_file = paste0("/path/to/Rdata/output/exp06/output_ascat/", ascat_worksheet$Sample_ID[i], "_normal_BAF.txt"), 
+                 gender = 'XX', genomeVersion = "hg38")}
+
+
+ascat.bc <- bplapply(1:nrow(ascat_worksheet), load_sample, BPPARAM = param)
+```
+
+# make plots showing the logR and BAF values for tumour and germline samples
+```{r}
+plot_raw <- lapply(1:nrow(ascat_worksheet), function(x){
+  ascat.plotRawData(ascat.bc[[x]], img.dir= "/path/to/Rdata/output/exp06/output_ascat/img",
+                    img.prefix = "Before_correction_")})
+```
+
+# Correct logR of the tumour sample(s) with genomic GC content and replication timing 
+
+```{r}
+
+correct_logR <- function(i){
+  ascat.correctLogR(ascat.bc[[i]], 
+                    GCcontentfile = "/path/to/db/GRCh38/GC_G1000_hg38.txt" , 
+                    replictimingfile = "/path/to/db/GRCh38/RT_G1000_hg38.txt")}
+
+ascat.bc <- bplapply(1:nrow(ascat_worksheet), correct_logR, BPPARAM = param)
+names(ascat.bc) <- ascat_worksheet$Sample_ID
+```
+
+# make plots showing the logR and BAF values for tumour and germline samples after correction
+  
+```{r}  
+
+plot_corrected <- lapply(1:nrow(ascat_worksheet), function(x){
+  ascat.plotRawData(ascat.bc[[x]], 
+                    img.dir= img.dir,
+                    img.prefix = "After_correction_")})
+```
+
+
+# Rerun Ascat for samples with nonoptimal choices of parameters (based on sunrise plots)
+We made a table `sunrise.data.tsv` recording optimal Purity and Ploidy return from ASCAT. For 35 samples, we manually assigned the aberrant cell fraction (tumor purity) and tumor ploidy parameters corresponding to the regions of highest probability as depicted on the sunrise plots and rerun ASCAT with these values 
+
+```{r}
+
+#samples that need to be re-run 
+sunrise.input <- read.table("/path/to/Rdata/output/exp06/sunrise.data.tsv", header = TRUE, sep = "\t", na.strings = "NA", stringsAsFactors = FALSE)
+sunrise.input$Final.Purity <- sunrise.input$Final.Purity / 100
+ascat.samples <- names(ascat.bc)
+sunrise.input <- sunrise.input[match(ascat.samples, sunrise.input$Sample), ]
+
+# Keep only rows where Final.Ploidy is not NA
+sunrise.input <- sunrise.input[complete.cases(sunrise.input$Final.Ploidy), ]
+common_ascat_samples <- intersect(ascat.samples, sunrise.input$Sample)
+
+# Subset ascat.samples to keep only those that are in sunrise.input$Sample
+ascat.samples <- ascat.samples[ascat.samples %in% common_ascat_samples]
+ascat.bc.rerun <- ascat.bc[names(ascat.bc) %in% ascat.samples]
+
+
+rerun_ascat <- function(i) {
+  ascat.runAscat(
+    ASCATobj = ascat.bc.rerun[[i]],
+    rho_manual = sunrise.input$Final.Purity[i],
+    psi_manual = sunrise.input$Final.Ploidy[i],
+    img.dir = "/path/to/Rdata/output/exp06/output_ascat/img",
+    gamma = 1,
+    write_segments = TRUE
+  )
+}
+
+ascat.output.rerun <- bplapply(1:length(ascat.bc.rerun), rerun_ascat, BPPARAM = param)
+
+
+```
+
+
+
+```{r}
+# Merge rerun results with original data
+# Update ascat.bc with rerun results
+for(sample in names(ascat.bc.rerun)) {
+  ascat.bc[[sample]] <- ascat.bc.rerun[[sample]]
+}
+
+# Update ascat.output with rerun results
+for(sample in names(ascat.bc.rerun)) {
+  ascat.output[[sample]] <- ascat.output.rerun[[which(names(ascat.bc.rerun) == sample)]]
+}
+
+
+saveRDS(ascat.output, "/path/to/Rdata/output/exp06/output_ascat/Robj/ascat_output.rds")
+```
+
+```{r}
+QC_ascat <-  lapply(1:nrow(ascat_worksheet), function(x){
+  ascat.metrics(ascat.bc[[x]],ascat.output[[x]])})
+
+```
+
+
+```{r}
+
+head(ascat.output[[1]]$segments)
+
+segments.tb <- do.call(rbind, lapply(ascat.output, "[[", "segments"))
+head(segments.tb)
+
+segments.tb <- segments.tb[!segments.tb$chr=="X",]
+
+write.table(segments.tb, file="/path/to/Rdata/output/exp06/output_ascat/ascat_output_filtered.tsv", sep="\t", col.names = TRUE, row.names = FALSE, quote = FALSE)
+
+ploidy.list <- lapply(ascat.output, function(x) x$ploidy)
+
+ploidy.tb <- do.call(rbind, lapply(seq_along(ploidy.list), function(i) {
+  ploidy_vector <- ploidy.list[[i]]
+  data.frame(sample = names(ploidy_vector), ploidy = round(as.numeric(ploidy_vector)), stringsAsFactors = FALSE)
+}))
+
+write.table(ploidy.tb, file="/path/to/Rdata/output/exp06/output_ascat/ascat_ploidy_filtered.tsv", sep="\t", col.names = TRUE, row.names = FALSE, quote = FALSE)
+
+```
+
+# Run absolute aCNViewer histograms
+
+# First create a conda environment with python 2.7
+```{bash}
+conda create -n python2.7 python=2.7
+conda activate python2.7
+```
+
+
+```{bash}
+cd /path/to/tools/aCNViewer/
+
+nice -n 19 python /path/to/tools/aCNViewer/code/aCNViewer.bak.py -f /path/to/Rdata/output/exp06/output_ascat/ascat_output_filtered.tsv -t /path/to/Rdata/output/exp06/acnviewer_ascat_filtered_1000000nt --refBuild hg38 -w 1000000 -b aCNViewer_DATA/bin --ploidyFile /path/to/Rdata/output/exp06/output_ascat/ascat_ploidy_filtered.tsv --outputFormat pdf
+```
+
+
+for separate groups/conditions
+
+```{r}
+
+
+# conditions and corresponding file names
+conditions <- list(
+  LumB = "subtype == 'LumB'",
+  Basal = "subtype == 'Basal'",
+  Her2 = "subtype == 'Her2'",
+  LumA = "subtype == 'LumA'",
+  Normal = "subtype == 'Normal'",
+  HighGrade = "nugradef == 'High'",
+  ModerateGrade = "nugradef == 'Moderate'",
+  LowGrade = "nugradef == 'Low'"
+)
+
+
+# Function to get sample names for a given condition and write to file
+write_sample_lists <- function(conditions, output_dir_subgroups) {
+  for (name in names(conditions)) {
+    sample_list <- get_sample_list(conditions[[name]])
+    file_path <- file.path(output_dir_subgroups, paste0(name, "_samples.txt"))
+    writeLines(sample_list, con = file_path)
+  }
+}
+
+write_sample_lists(conditions, output_dir_subgroups="/path/to/Rdata/output/exp06/aCNViewer_subgroups/")
+
+```
+
+
+```{bash}
+
+# Define paths
+output_dir="/path/to/Rdata/output/exp06/aCNViewer_subgroups/"
+ascat_output_base="/path/to/Rdata/output/exp06/output_ascat/ascat_output_filtered"
+acnviewer_output_base="/path/to/Rdata/output/exp06/acnviewer_ascat_filtered"
+ploidy_file_base="/path/to/Rdata/output/exp06/output_ascat/ascat_ploidy_filtered"
+command_file="${output_dir}acnviewer_commands.sh"
+
+# Find all suffixes from sample files
+suffixes=$(ls ${output_dir}*_samples.txt | sed 's/_samples.txt$//' | xargs -n 1 basename)
+
+> "${command_file}"
+
+# Loop through each suffix and generate commands
+for suffix in ${suffixes}; do
+  ascat_output_file="${ascat_output_base}.tsv"
+  acnviewer_output_dir="${acnviewer_output_base}_${suffix}"
+  ploidy_file="${ploidy_file_base}.tsv"
+  sample_list_file="${output_dir}${suffix}_samples.txt"
+  
+  # Construct the command
+  command=$(printf "nice -n 19 python /path/to/tools/aCNViewer/code/aCNViewer.bak.py -f %s -t %s --refBuild hg38 -w 1000000 -b aCNViewer_DATA/bin --ploidyFile %s --outputFormat pdf --sampleList %s\n" \
+    "${ascat_output_file}" \
+    "${acnviewer_output_dir}" \
+    "${ploidy_file}" \
+    "${sample_list_file}")
+  
+  # Append the command to the command file
+  echo -e "${command}" >> "${command_file}"
+done
+
+${command_file}
+```
+

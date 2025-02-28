@@ -1,0 +1,241 @@
+---
+title: "Neusomatic"
+author: "Vanessa Dumeaux"
+date: "2025-02-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+To run this script, you will need the following:
+- Neusomatic (through Docker)
+- dbSNP release of choice (v138 used in this project) ("gatk_hg38/Homo_sapiens_assembly38.dbsnp138.vcf")
+- FASTA of the human genome  ("gatk_hg38/Homo_sapiens_assembly38.fasta")
+- BED file indicating the regions of exons ("GRCh38/SureSelectHumanExonsv7/S31285117_hs_hg38/S31285117_Regions.bed")
+- Installation of VCF2MAF, BCFtools and VEP 
+
+
+# Notable Neusomatic Documentation
+
+[NeuSomatic](https://github.com/bioinform/neusomatic) is based on deep convolutional neural networks for somatic mutation detection.
+
+## Publication
+If you use NeuSomatic in your work, please cite the following papers:
+
+Sayed Mohammad Ebrahim Sahraeian, Ruolin Liu, Bayo Lau, Karl Podesta, Marghoob Mohiyuddin, Hugo Y. K. Lam, <br/> 
+[Deep convolutional neural networks for accurate somatic mutation detection. Nature Communications 10: 1041, (2019). <br/> 
+doi: https://doi.org/10.1038/s41467-019-09027-x](https://doi.org/10.1038/s41467-019-09027-x)
+
+## Ensemble mode
+NeuSomatic can be used universally as a stand-alone somatic mutation detection method or with an ensemble of existing methods. NeuSomatic currently supports outputs from MuTect2, MuSE, Strelka2, SomaticSniper, VarDict, and VarScan2. For ensemble mode, the ensembled outputs of different somatic callers (as a single `.tsv` file) should be prepared and inputed using `--ensemble_tsv` argument in `preprocess.py` and `postprocess.py` . 
+
+We use **Dockerized solution** for running all of the individual somatic callers (MuTect2, MuSE, Strelka2, SomaticSniper, VarDict, and VarScan2), and a wrapper that combines their output is explained at [ensemble_docker_pipelines](https://github.com/bioinform/neusomatic/tree/master/ensemble_docker_pipelines).
+
+To run the individual somatic callers (MuTect2, MuSE, Strelka2, SomaticSniper, VarDict, and VarScan2), you can use the following command that create 10 (if we set splits to 10) equal-size regions in 10 bed files, and parallelize the jobs into 10 regions.
+
+
+
+```{r}
+library(R.utils)
+library(BiocParallel)
+
+
+ncores <- 4
+register(MulticoreParam(workers=ncores))
+
+# sequencing data: bam files preprocessed and filtered in exp01-prepreocessing_exome
+gatk_filtered <- "path_to_gatk_filtered_output_folder"
+
+files <- list.files(gatk_filtered, pattern = ".bam$", full.names = TRUE, recursive = TRUE)
+
+# tumorbam character vector of paths for tumor bam files
+# tumor.sn: character vector of unique sample names extracted from file names
+
+# refbam: character vector of paths for matched normal bam files
+# ref.sn: character vector of unique sample names extracted from file names
+
+
+``` 
+
+This step creates the individual variant calling scripts that will be run
+
+```{r}
+# This will require a FASTA of the human genome, the location of exons (in a BED file) and a version of dbSNP as a VCF
+library(BiocParallel)
+
+neusomatic_output<- "path_to_neusomatic_output_folder"
+if(!file.exists(neusomatic_output)){
+  dir.create(neusomatic_output, showWarnings = FALSE) 
+}
+
+ensemble.tumor <- function(x){
+      system(capture.output(
+                        cat("bash", file.path(path_to_tools_folder, "neusomatic/ensemble_docker_pipelines/prepare_callers_scripts.sh"),
+                            "--normal-bam", refbam[grep(paste0(x, "_N"), refbam)],
+                            "--normal-name 'NORMAL'",
+                            "--tumor-name 'TUMOR'",
+                            "--tumor-bam", tumorbam[grep(paste0(x, "_D"), tumorbam)],
+                            "--human-reference", file.path(path_to_db_folder,"gatk_hg38/Homo_sapiens_assembly38.fasta"),
+                            "--output-dir", file.path(path_to_neusomatic_output_folder, paste0(x, "_D")),
+                            "--dbsnp", file.path(path_to_db_folder,"gatk_hg38/Homo_sapiens_assembly38.dbsnp138.vcf"),
+                            "--splits 10 --selector", file.path(path_to_db_folder,"GRCh38/SureSelectHumanExonsv7/S31285117_hs_hg38/S31285117_Regions.bed"),
+                            "--exome --mutect2 --somaticsniper --vardict --varscan2 --muse --strelka --wrapper")
+
+      ))
+}
+
+bplapply(tumor.sn, ensemble.tumor)
+
+```
+
+
+## Run all individual callers scripts
+You should first run all individual callers `.cmd` run scripts for all regions. For instance with `qsub` command:
+
+```{r}
+run.cmd <- function(x){
+     system(capture.output(cat("bash", x)))}
+
+
+
+scripts <- list.files(neusomatic_output, pattern=".cmd", recursive = TRUE, full.names = TRUE)
+scripts2 <- scripts[grep("logs/", scripts)]
+
+bplapply(scripts2, run.cmd)
+```
+
+Create .tbi file (required to be compressed with bgzip)
+ ```{bash}
+bgzip /path/to/db/gatk_hg38/Homo_sapiens_assembly38.dbsnp138.vcf
+tabix -p vcf /path/to/db/gatk_hg38/Homo_sapiens_assembly38.dbsnp138.vcf.gz
+```
+
+## Combine individual callers outputs
+Once all these scripts finished successfully, the respective VCF files for each tool will be available under each region sub-folder.
+
+First, fix Mutect2.vcf to parse multiallelic sites
+```{r}
+mutect2.files <- list.files(neusomatic_output, pattern="^MuTect2.vcf$", full.names = TRUE, recursive = TRUE)
+
+cp.files <- function(x){
+    system(capture.output(
+                          cat("cp", x, gsub("MuTect2.vcf","MuTect2.orig.vcf",x))
+                          )
+    )
+}
+
+bplapply(mutect2.files, cp.files)
+
+# use bcftools to perform normalization operations on the resulting VCF file
+multiall <- function(x){
+    system(capture.output(
+                          cat(file.path(path_to_tools_folder, "bcftools/bcftools norm -m -"), gsub("MuTect2.vcf", "MuTect2.orig.vcf", x),
+                              "-o", x)
+                          )
+    )
+}
+
+bplapply(mutect2.files, multiall)
+
+```
+
+
+Run wrapper.cmd scripts to combine calls made by each caller:
+```{r}
+
+scripts2 <- list.files(neusomatic_output, pattern="wrapper.cmd", recursive = TRUE, full.names = TRUE)
+
+# to successfully run this step, I had to install the following python modules: regex, pysam, scipy
+# if you see the warning "intersectBed: command not found", put BEDtools on your path
+
+# Note this command does give an occasional warning: "RuntimeWarning: invalid value encountered in double_scalars":
+#./.local/lib/python3.6/site-packages/scipy/stats/stats.py:7103: RuntimeWarning: invalid value encountered in double_scalars
+#  z = (s - expected) / np.sqrt(n1*n2*(n1+n2+1)/12.0)
+
+# This apparently happens when the denominator of a calculation is very small. If we see 'NaN' it may be due to this error. Be aware of it.
+
+bplapply(scripts2, run.cmd)
+
+```
+This will generate "Ensemble.sSNV.tsv" and "Ensemble.sINDEL.tsv" under each region subfolder (e.g. under 'output/{1,2,3,...}/Wrapper/'). 
+
+Now you can combine these files to generate `ensemble_ann.tsv` file.
+
+
+First create a table with 4 columns containing tumor.sn, tumorbam, patient.id, refbam and save in `/path/to/data/postprocess-table.txt`
+
+Then run:
+
+
+```{bash}
+bash ./01-run-cat.sh /path/to/data/postprocess-table.txt
+```
+
+
+## [NEUSOMATIC](https://github.com/bioinform/neusomatic)
+As noted in the README, neusomatic provides a set of pre-trained NeuSomatic network models for general purpose usage. Although as in other deep learning frameworks, users should note that there may be situations that the pre-trained models may not always work as perfectly. 
+
+### Preprocess
+
+```{bash}
+conda activate neusomatic
+
+# had to install some Python packages: pybedtools
+
+bash ./02-run-neusomatic-preprocess.sh /path/to/data/postprocess-table.txt
+```
+
+### Call
+
+
+```{bash}
+
+conda activate neusomatic
+
+# Neusomatic-required library Torchvision gave an error with pre-requisite function "pillow", which broke in 2020 in its 7.0 update
+# To fix the problem, I installed the previous instance of Pillow: 
+conda install pillow=6.2.1
+
+bash ./03-run-neusomatic-call.sh /path/to/data/postprocess-table.txt
+```
+
+### Postprocess
+```{bash}
+conda activate neusomatic
+bash ./04-run-neusomatic-postprocess.sh /path/to/data/postprocess-table.txt
+
+```
+
+## Annotate with VEP
+```{bash}
+bash ./05-run-docker-vep.sh /path/to/data/postprocess-table.txt
+
+```
+The code above uses docker. I also locally installed Vep and plugins in a conda environment `perl` by running `conda create -n perl -c bioconda perl-dbi`.
+Then: `conda install -c bioconda perl-try-tiny`
+
+
+Official installation instructions: https://useast.ensembl.org/info/docs/tools/vep/script/vep_download.html
+
+Informative gist: https://gist.github.com/ckandoth/5390e3ae4ecf182fa92f6318cfa9fa97
+
+```{bash}
+conda activate perl # need to install perls modules 
+
+export VEP_PATH=/path/to/tools/vep_data/vep
+export VEP_DATA=/path/to/tools/vep_data/.vep
+export PERL5LIB=$VEP_PATH:$PERL5LIB
+export PATH=$VEP_PATH/htslib:$PATH
+bash ./05-run-vep.sh /path/to/data/postprocess-table.txt
+```
+
+## VCF to MAF
+
+To convert a [VCF](http://samtools.github.io/hts-specs/) into a [MAF](https://wiki.nci.nih.gov/x/eJaPAQ), each variant must be mapped to only one of all possible gene transcripts/isoforms that it might affect. But even within a single isoform, a `Missense_Mutation` close enough to a `Splice_Site`, can be labeled as either in MAF format, but not as both. **This selection of a single effect per variant, is often subjective. And that's what this project attempts to standardize.** The `vcf2maf` and `maf2maf` scripts leave most of that responsibility to [Ensembl's VEP](http://useast.ensembl.org/info/docs/tools/vep/index.html), but allows you to override their "canonical" isoforms, or use a custom ExAC VCF for annotation. Though the most useful feature is the **extensive support in parsing a wide range of crappy MAF-like or VCF-like formats** we've seen out in the wild.
+
+```{bash}
+conda activate perl
+
+bash ./06-run-vcf2maf.sh /path/to/data/postprocess-table.txt
+```
