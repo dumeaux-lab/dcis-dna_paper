@@ -40,10 +40,10 @@ dcis <- readRDS("/path/to/Rdata/output/exp04/dcis.rds")
 all.sig.genes <- survival.analysis(maf_data = dcis, time = "time.10", event = "event.10", clinsubset = NULL, top = nrow(dcis@gene.summary[dcis@gene.summary$MutatedSamples>5]), pvalue = 0.01)
 
 # Survival analysis RT treated patients
-radiation.sig.genes <- survival.analysis(maf_data = dcis, time = "time.10", event = "event.10", clinsubset = "radiation==TRUE", top = nrow(dcis@gene.summary[dcis@gene.summary$MutatedSamples>5]), pvalue = 0.01)
+radiation.sig.genes <- survival.analysis(maf_data = dcis, time = "time.10", event = "event.10", clinsubset = "radiation==TRUE", top = nrow(dcis@gene.summary[dcis@gene.summary$MutatedSamples>5]), pvalue = 0.05)
 
 # Survival analysis non-RT treated patients
-noradiation.sig.genes <- survival.analysis(maf_data = dcis, time = "time.10", event = "event.10", clinsubset = "radiation==FALSE", top = nrow(dcis@gene.summary[dcis@gene.summary$MutatedSamples>5]), pvalue = 0.01)
+noradiation.sig.genes <- survival.analysis(maf_data = dcis, time = "time.10", event = "event.10", clinsubset = "radiation==FALSE", top = nrow(dcis@gene.summary[dcis@gene.summary$MutatedSamples>5]), pvalue = 0.05)
 
 ```
 
@@ -96,8 +96,7 @@ plotdf <- all.sig.genes$surv_result$restb[all.sig.genes$surv_result$restb$Gene_c
 
 # Set factor levels to have the same order than oncoplot
 plotdf$Gene_combination <- factor(plotdf$Gene_combination, 
-                                     levels = rev(c("MYO7A", "HIVEP3", "DNASE2B", "TRIM66", "PDZD8",
-                                                "TIGD6", "DERL3", "VSIG10L", "STOX1", "TBL3", "STON1", "NPFFR1")), ordered = TRUE)
+                                     levels = rev(c("SH2B2", "MYO7A", "MUCL3", "DNASE2B", "PDZD8")), ordered = TRUE)
                                      
 # Hazard ratio plot                                     
 pdf(paste0("../../figures/exp07/hr_allgenes_ordered.pdf"), height = 10, width = 20)
@@ -130,18 +129,18 @@ dev.off()
 ## KM curves
 ```{r}
 # Survival analysis on significant genes (gene set size =  12)
-combo.all.sig.genes <- survival.analysis(maf_data =all.sig.genes$maf, 
+combo.all.sig.genes <- survival.analysis(maf_data = all.sig.genes$maf, 
                                          genes = all.sig.genes$genes, 
-                                         geneSetSize = 12, 
-                                         genecombo = 'union', 
+                                         geneSetSize = 5, 
+                                         genecombo = 'union', minMutations=1,
                                          time = "time.10", 
                                          event = "event.10", pvalue = 0.01) 
 
 # Kaplan-Meier plot: No patients in the radiated group without at least one mutation in these 13 genes experienced recurrence within 10 years
 km <- ggsurvplot(
-      combo.all.sig.genes$surv_result$res$MYO7A_PDZD8_DNASE2B_TRIM66_HIVEP3_TIGD6_DERL3_VSIG10L_STOX1_TBL3_STON1_NPFFR1$fit.km, 
+      combo.all.sig.genes$surv_result$res$PDZD8_SH2B2_MYO7A_DNASE2B_MUCL3$fit.km, 
       # survfit object with calculated statistics.
-      data=combo.all.sig.genes$surv_result$res$MYO7A_PDZD8_DNASE2B_TRIM66_HIVEP3_TIGD6_DERL3_VSIG10L_STOX1_TBL3_STON1_NPFFR1$data,
+      data=combo.all.sig.genes$surv_result$res$MPDZD8_SH2B2_MYO7A_DNASE2B_MUCL3$data,
       pval = TRUE,             # show p-value of log-rank test.
       conf.int = TRUE,         # show confidence intervals for 
                             # point estimaes of survival curves.
@@ -226,16 +225,17 @@ ggsave("../../figures/exp07/allgenes_cc_plot.pdf", allgenes.cc.plot)
 # Survival analysis on radiation-associated significant genes
 combo.radiation.sig.genes <- survival.analysis(maf_data =radiation.sig.genes$maf, 
                                                genes = radiation.sig.genes$genes, 
-                                               geneSetSize = 27, genecombo = 'union', 
+                                               geneSetSize = 29, genecombo = 'union',
+                                               minMutations = 2,
                                                time = "time.10", 
                                                event = "event.10", 
-                                               pvalue = 0.01) 
+                                               pvalue = 0.05) 
 # Note: no event within 10 years for radiated group which do not have at least one mutation in one of these 13 genes
 
 # Generate Kaplan-Meier survival plot for the identified gene combination
 km <- ggsurvplot(
-      combo.radiation.sig.genes$surv_result$res$MAGEC3_EXD3_SH2B2_NPFFR1_ANO6_GLI3_OR4D6_STON1_PCSK1_CAPN9_ZFYVE9_PTPN13_SRRM5_SORBS1_TMEM132C_AADACL3_ABCA2_CEP128_CHD1L_COL5A3_SZT2_RELN_KIAA1217_PATJ_KRT1_WWC1_MAGEC1$fit.km,
-      data=combo.radiation.sig.genes$surv_result$res$MAGEC3_EXD3_SH2B2_NPFFR1_ANO6_GLI3_OR4D6_STON1_PCSK1_CAPN9_ZFYVE9_PTPN13_SRRM5_SORBS1_TMEM132C_AADACL3_ABCA2_CEP128_CHD1L_COL5A3_SZT2_RELN_KIAA1217_PATJ_KRT1_WWC1_MAGEC1$data,
+      combo.radiation.sig.genes$surv_result$res$ANO6_SH2B2_REV1_C6orf118_MUCL3_PCSK1_WWC1_TMEM132C_SORBS1_CTBP2_TTLL10_KRT1_EML5_MAGEC3_EXD3_NPFFR1_ABCA2_MGAM2_CEP128_GLI3_PTPN13_CFAP47_TBC1D4_ZNF641_AADACL3_AFF3_MROH2B_CALU_KIF24$fit.km,
+      data=combo.radiation.sig.genes$surv_result$res$ANO6_SH2B2_REV1_C6orf118_MUCL3_PCSK1_WWC1_TMEM132C_SORBS1_CTBP2_TTLL10_KRT1_EML5_MAGEC3_EXD3_NPFFR1_ABCA2_MGAM2_CEP128_GLI3_PTPN13_CFAP47_TBC1D4_ZNF641_AADACL3_AFF3_MROH2B_CALU_KIF24$data,
       pval = TRUE,             # show p-value of log-rank test.
       conf.int = TRUE,         # show confidence intervals for 
                             # point estimaes of survival curves.
@@ -263,18 +263,17 @@ dev.off()
 ```{r}
 
 # Check cox (also after adjustment for age - use Firth's penalized likelihood Cox regression)
-cd <- combo.radiation.sig.genes$surv_result$res$MAGEC3_EXD3_SH2B2_NPFFR1_ANO6_GLI3_OR4D6_STON1_PCSK1_CAPN9_ZFYVE9_PTPN13_SRRM5_SORBS1_TMEM132C_AADACL3_ABCA2_CEP128_CHD1L_COL5A3_SZT2_RELN_KIAA1217_PATJ_KRT1_WWC1_MAGEC1$data
+cd <- combo.radiation.sig.genes$surv_result$res$ANO6_SH2B2_REV1_C6orf118_MUCL3_PCSK1_WWC1_TMEM132C_SORBS1_CTBP2_TTLL10_KRT1_EML5_MAGEC3_EXD3_NPFFR1_ABCA2_MGAM2_CEP128_GLI3_PTPN13_CFAP47_TBC1D4_ZNF641_AADACL3_AFF3_MROH2B_CALU_KIF24$data
 firth_model <- coxphf(Surv(Time, Status) ~ Group+age, data = cd)
 firth_model
 
 # Perform survival analysis on radiation-specific genes but when including all patients
-combo.radiation.sig.genes <- survival.analysis(maf_data = all.sig.genes$maf, 
-                                               genes = radiation.sig.genes$genes, 
-                                               geneSetSize = 27, 
-                                               genecombo = 'union', 
-                                               time = "time.10", 
-                                               event = "event.10", 
-                                               pvalue = 0.01) # not significant when all patients are included
+combo.radiation.sig.genes.forall <- survival.analysis(
+  maf_data = all.sig.genes$maf,
+  genes = radiation.sig.genes$genes[!radiation.sig.genes$genes %in% intersect(radiation.sig.genes$genes, all.sig.genes$genes)], 
+  geneSetSize = 27, genecombo = 'union', minMutations =2, 
+  time = "time.10", event = "event.10", pvalue = 0.01) # not significant when all patients are included
+
 ```
 
 ## check if it's related with number of synonymous variable
@@ -282,7 +281,7 @@ combo.radiation.sig.genes <- survival.analysis(maf_data = all.sig.genes$maf,
 ```{r}
 
 # Extract survival data
-dat <- combo.radiation.sig.genes$surv_result$res$MAGEC3_EXD3_SH2B2_NPFFR1_ANO6_GLI3_OR4D6_STON1_PCSK1_CAPN9_ZFYVE9_PTPN13_SRRM5_SORBS1_TMEM132C_AADACL3_ABCA2_CEP128_CHD1L_COL5A3_SZT2_RELN_KIAA1217_PATJ_KRT1_WWC1_MAGEC1$data
+dat <- combo.radiation.sig.genes$surv_result$res$ANO6_REV1_C6orf118_PCSK1_WWC1_TMEM132C_SORBS1_CTBP2_TTLL10_KRT1_EML5_MAGEC3_EXD3_NPFFR1_ABCA2_MGAM2_CEP128_GLI3_PTPN13_CFAP47_TBC1D4_ZNF641_AADACL3_AFF3_MROH2B_CALU_KIF24$data
 dat$n_nonsynonymous_mut <- as.numeric(dat$n_nonsynonymous_mut)
 
 # T-test to compare non synonymous mutation burden between groups
@@ -302,22 +301,17 @@ dev.off()
 ```
 
 
-```{r}
-# Perform survival analysis on radiation-associated significant genes (gene set size = 27)
-combo.radiation.sig.genes <- survival.analysis(maf_data = all.sig.genes$maf, 
-                                               genes = radiation.sig.genes$genes, 
-                                               geneSetSize = 27, 
-                                               genecombo = 'union', 
-                                               time = "time.10", 
-                                               event = "event.10", 
-                                               pvalue = 0.01) # not significant when all patients are included
-```
-
-
-
-
 ## GO annotations. - significant genes in radiation-treated patients
 ```{r}
+plotdf <- radiation.sig.genes$surv_result$restb[radiation.sig.genes$surv_result$restb$Gene_combination %in% radiation.sig.genes$genes,]
+
+
+# Convert gene symbols to Entrez IDs
+entrez_ids <- mapIds(org.Hs.eg.db,
+                    keys = as.character(plotdf$Gene_combination),
+                    column = "ENTREZID",
+                    keytype = "SYMBOL",
+                    multiVals = "first")
 
 # GO enrichment for Biological Process (BP)  
 ego10 <- enrichGO(entrez_ids, 
