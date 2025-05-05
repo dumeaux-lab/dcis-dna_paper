@@ -9,7 +9,8 @@ require(patchwork)
 
 # make a function to perform survival group analysys with different cohorts
 survival.analysis <- function(maf_data, time="time.10", event="event.10", 
-                              geneSetSize = 1, genecombo = 'intersection', genes=NULL, 
+                              geneSetSize = 1, genecombo = 'intersection', minMutations = 1,
+                              genes=NULL, 
                               clinsubset = NULL, top = 50, pvalue = 0.05, output = "") {
   
   
@@ -124,7 +125,7 @@ my_run_surv = function(cd, tsbs){
 }
 
 
-mysurvGroup = function(maf=maf, top = top, genes = genes, geneSetSize = geneSetSize, genecombo = genecombo,
+mysurvGroup = function(maf=maf, top = top, genes = genes, geneSetSize = geneSetSize, genecombo = genecombo, minMutations = minMutations
                        minSamples = 5, clinicalData = NULL, time=time, Status=event, verbose = TRUE, pvalue=0.05){
   
   if(is.null(genes)){
@@ -192,7 +193,7 @@ mysurvGroup = function(maf=maf, top = top, genes = genes, geneSetSize = geneSetS
     res = lapply(seq_along(1:ncol(genesCombn)), function(i){
       x = genesCombn[,i]
       mm = mutMat[,x, drop = FALSE]
-      genesTSB = names(which(rowSums(mm) > 1))
+      genesTSB = names(which(rowSums(mm) >= minMutations))
       if(length(genesTSB) >= minSamples){
         if(verbose){
           cat("Union Geneset: ", paste0(x, collapse = ","), "[N=", length(genesTSB),"]\n")
