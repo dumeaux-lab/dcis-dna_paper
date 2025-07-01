@@ -35,15 +35,57 @@ library(enrichplot)
 
 # Load data
 dcis <- readRDS("/path/to/Rdata/output/exp04/dcis.rds")
+dcis@clinical.data$size_cat <- dcis@clinical.data$tumor_size < 25
+```
+
+# Differentiate in-situ and invasive LR
+
+```{r}
+dcis@clinical.data$event.10.inv <- ifelse(dcis@clinical.data$event.10==1 & dcis@clinical.data$hist_1st_lr=="DCIS", 0, dcis@clinical.data$event.10)
+
+table(dcis@clinical.data$hist_1st_lr, dcis@clinical.data$event.10.inv)
+
+table(dcis@clinical.data$event.10, dcis@clinical.data$event.10.inv)
+
+dcis@clinical.data$event.10.insitu <- ifelse(dcis@clinical.data$event.10==1 & dcis@clinical.data$hist_1st_lr=="INVA", 0, dcis@clinical.data$event.10)
+
+table(dcis@clinical.data$hist_1st_lr, dcis@clinical.data$event.10.insitu)
+
+dcis@clinical.data$event.10.insitu
+
+dcis@clinical.data$event.type.10 <- "no LR"
+dcis@clinical.data$event.type.10 <- ifelse(dcis@clinical.data$event.10.insitu==1, "in-situ LR", dcis@clinical.data$event.type.10)
+dcis@clinical.data$event.type.10 <- ifelse(dcis@clinical.data$event.10.inv==1, "invasive LR", dcis@clinical.data$event.type.10)
+
+saveRDS(dcis, "/path/to/Rdata/output/exp04/dcis.rds")
+
+```
+
+
+
+
+```{r}
 
 # Survival analysis all patients
-all.sig.genes <- survival.analysis(maf_data = dcis, time = "time.10", event = "event.10", clinsubset = NULL, top = nrow(dcis@gene.summary[dcis@gene.summary$MutatedSamples>5]), pvalue = 0.01)
+radiation.sig.genes <- survival.analysis(maf_data = dcis, time = "time.10", event = "event.10", clinsubset = "radiation==TRUE", 
+                                         top = nrow(dcis@gene.summary[dcis@gene.summary$MutatedSamples>5]), pvalue = 0.05, perm_p = 0.05, 
+                                         use_permutation = TRUE, n_perm = 1000, output = "/path/to/figures/exp07/survival_allLR")
+saveRDS(radiation.sig.genes, "/path/to/Rdata/output/exp07/survival_allLR/radiation_sig_genes_coxphf.rds")
+
 
 # Survival analysis RT treated patients
-radiation.sig.genes <- survival.analysis(maf_data = dcis, time = "time.10", event = "event.10", clinsubset = "radiation==TRUE", top = nrow(dcis@gene.summary[dcis@gene.summary$MutatedSamples>5]), pvalue = 0.05)
+noradiation.sig.genes <- survival.analysis(maf_data = dcis, time = "time.10", event = "event.10", clinsubset = "radiation==FALSE", 
+                                           top = nrow(dcis@gene.summary[dcis@gene.summary$MutatedSamples>5]), pvalue = 0.05, perm_p = 0.05, 
+                                           use_permutation = TRUE, n_perm = 1000, output = "/path/to/figures/exp07/survival_allLR")
+saveRDS(noradiation.sig.genes, "/path/to/Rdata/output/exp07/survival_allLR/noradiation_sig_genes_coxphf.rds")
+
 
 # Survival analysis non-RT treated patients
-noradiation.sig.genes <- survival.analysis(maf_data = dcis, time = "time.10", event = "event.10", clinsubset = "radiation==FALSE", top = nrow(dcis@gene.summary[dcis@gene.summary$MutatedSamples>5]), pvalue = 0.05)
+all.sig.genes <- survival.analysis(maf_data = dcis, time = "time.10", event = "event.10", clinsubset = NULL, 
+                                   top = nrow(dcis@gene.summary[dcis@gene.summary$MutatedSamples>5]), pvalue = 0.01, perm_p = 0.05, 
+                                   use_permutation = TRUE, n_perm = 1000, output = "/path/to/figures/exp07/survival_allLR")
+saveRDS(all.sig.genes, "/path/to/Rdata/output/exp07/survival_allLR/all_sig_genes_coxphf.rds")
+
 
 ```
 
@@ -68,23 +110,32 @@ col.clinical <- list()
 col.clinical[["subtype"]] <- c(LumA="blue4", LumB="deepskyblue", Basal="firebrick2", Normal="green4", Her2="hotpink2", "NA"="darkgrey")
 col.clinical[["age"]] <- c(over60="#3182bd", "50-60"="#9ecae1", under50="#deebf7")
 col.clinical[["nugradef"]] <- c(High="#de2d26", Moderate="#fc9272", Low="#fee0d2")
-col.clinical[["event.10.chr"]] <- c("0"="#fee0b6", "1"="#b35806")
+col.clinical[["event.type.10"]] <- c('in-situ LR'="#f1a340", 'invasive LR'="#b35806", 'no LR' = "white")
 
 
 # Oncoplot all significant genes
 pdf("../../figures/exp07/oncoplot_all_genes_coxphf.pdf", width =12)
-oncoplot(maf = all.sig.genes$maf, genes = all.sig.genes$genes, colors = vc_cols, clinicalFeatures = c('event.10.chr', 'age', 'nugradef','subtype'), annotationColor=col.clinical,fontSize = 0.3,  gene_mar = 8, showTitle = FALSE)
+oncoplot(maf = all.sig.genes$maf, genes = all.sig.genes$genes, colors = vc_cols, clinicalFeatures = c('event.type.10', 'age', 'nugradef','subtype'), annotationColor=col.clinical,fontSize = 0.3,  gene_mar = 8, showTitle = FALSE)
 dev.off()
 
 # Oncoplot for RT associated genes
 pdf("../../figures/exp07/oncoplot_radiation_genes_coxphf.pdf", width =12)
-oncoplot(maf = radiation.sig.genes$maf, genes = radiation.sig.genes$genes, colors = vc_cols, clinicalFeatures = c('event.10.chr','age', 'nugradef','subtype'), annotationColor=col.clinical,fontSize = 0.3,  gene_mar = 8, showTitle = FALSE)
+oncoplot(maf = radiation.sig.genes$maf, genes = radiation.sig.genes$genes, colors = vc_cols, clinicalFeatures = c('event.type.10','age', 'nugradef','subtype'), annotationColor=col.clinical,fontSize = 0.3,  gene_mar = 8, showTitle = FALSE)
 dev.off()
 
 
 
 
 ```
+
+# Sruvival results for TP53 and PIK3CA
+
+```{r}
+all.sig.genes$surv_result$res$TP53$fit.cox
+all.sig.genes$surv_result$res$PIK3CA$fit.cox
+```
+
+
 # More exploratory plots for genes significantly associated with LR risk in all patients 
 
 ## HR plots ordered like oncoplot
@@ -338,3 +389,57 @@ dev.off()
 
 
 ```
+
+
+# Survival analyses - in-situ recurrence only
+
+```{r}
+
+radiation.sig.genes <- survival.analysis(maf_data = dcis, time = "time.10", event = "event.10.insitu", clinsubset = "radiation==TRUE", 
+                                         top = nrow(dcis@gene.summary[dcis@gene.summary$MutatedSamples>5]), pvalue = 0.05, use_permutation = TRUE, 
+                                         n_perm = 1000, perm_p = 0.05, output = "/path/to/figures/exp07/survival_insitu")
+saveRDS(radiation.sig.genes, "/path/to/Rdata/output/exp07/survival_insitu/radiation_sig_genes_coxphf.rds")
+
+
+
+noradiation.sig.genes <- survival.analysis(maf_data = dcis, time = "time.10", event = "event.10.insitu", clinsubset = "radiation==FALSE", 
+                                           top = nrow(dcis@gene.summary[dcis@gene.summary$MutatedSamples>5]), pvalue = 0.05, perm_p = 0.05,
+                                           use_permutation = TRUE, n_perm = 1000, output = "/path/to/figures/exp07/survival_insitu")
+
+saveRDS(noradiation.sig.genes, "/path/to/Rdata/output/exp07/survival_insitu/noradiation_sig_genes_coxphf.rds")
+
+
+all.sig.genes <- survival.analysis(maf_data = dcis, time = "time.10", event = "event.10.insitu", clinsubset = NULL, 
+                                   top = nrow(dcis@gene.summary[dcis@gene.summary$MutatedSamples>5]), pvalue = 0.01, perm_p = 0.05,
+                                   use_permutation = TRUE, n_perm = 1000, output = "/path/to/figures/exp07/survival_insitu")
+saveRDS(all.sig.genes, "/path/to/Rdata/output/exp07/survival_insitu/all_sig_genes_coxphf.rds")
+
+
+```
+
+# Survival analyses - invasive recurrence only
+
+```{r}
+
+radiation.sig.genes <- survival.analysis(maf_data = dcis, time = "time.10", event = "event.10.inv", clinsubset = "radiation==TRUE", 
+                                         top = nrow(dcis@gene.summary[dcis@gene.summary$MutatedSamples>5]), pvalue = 0.05, use_permutation = TRUE, 
+                                         n_perm = 1000, perm_p = 0.05, output = "/path/to/figures/exp07/survival_inv")
+saveRDS(radiation.sig.genes, "/path/to/Rdata/output/exp07/survival_inv/radiation_sig_genes_coxphf.rds")
+
+
+
+noradiation.sig.genes <- survival.analysis(maf_data = dcis, time = "time.10", event = "event.10.inv", clinsubset = "radiation==FALSE", 
+                                           top = nrow(dcis@gene.summary[dcis@gene.summary$MutatedSamples>5]), pvalue = 0.05, perm_p = 0.05,
+                                           use_permutation = TRUE, n_perm = 1000, output = "/path/to/figures/exp07/survival_inv")
+
+saveRDS(noradiation.sig.genes, "/path/to/Rdata/output/exp07/survival_inv/noradiation_sig_genes_coxphf.rds")
+
+
+all.sig.genes <- survival.analysis(maf_data = dcis, time = "time.10", event = "event.10.inv", clinsubset = NULL, 
+                                   top = nrow(dcis@gene.summary[dcis@gene.summary$MutatedSamples>5]), pvalue = 0.01, perm_p = 0.05,
+                                   use_permutation = TRUE, n_perm = 1000, output = "/path/to/figures/exp07/survival_inv")
+saveRDS(all.sig.genes, "/path/to/Rdata/output/exp07/survival_inv/all_sig_genes_coxphf.rds")
+
+
+```
+

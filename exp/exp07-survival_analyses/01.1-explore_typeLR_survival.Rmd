@@ -1,0 +1,325 @@
+---
+title: "compare LR-type survival"
+author: "Vanessa Dumeaux"
+date: "2025-05-29"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+ # Entire cohort
+
+```{r}
+allLR_all <- readRDS("/path/to/Rdata/output/exp07/survival_allLR/all_sig_genes_coxphf.rds")
+invLR_all <-  readRDS("/path/to/Rdata/output/exp07/survival_inv/all_sig_genes_coxphf.rds")
+insituLR_all <- readRDS("/path/to/Rdata/output/exp07/survival_insitu/all_sig_genes_coxphf.rds")
+
+allLR_RT <- readRDS("/path/to/Rdata/output/exp07/survival_allLR/radiation_sig_genes_coxphf.rds")
+invLR_RT <-  readRDS("/path/to/Rdata/output/exp07/survival_inv/radiation_sig_genes_coxphf.rds")
+insituLR_RT <- readRDS("/path/to/Rdata/output/exp07/survival_insitu/radiation_sig_genes_coxphf.rds")
+
+allLR_noRT <- readRDS("/path/to/Rdata/output/exp07/survival_allLR/noradiation_sig_genes_coxphf.rds")
+invLR_noRT <-  readRDS("/path/to/Rdata/output/exp07/survival_inv/noradiation_sig_genes_coxphf.rds")
+insituLR_noRT <- readRDS("/path/to/Rdata/output/exp07/survival_insitu/noradiation_sig_genes_coxphf.rds")
+
+
+```
+
+
+```{r}
+library(UpSetR)
+
+# Create a list of your gene sets
+list_input <- list(
+  "allLR_all" = allLR_all$genes,
+  "invLR_all" = invLR_all$gene,
+  "insituLR_all" = insituLR_all$genes,
+  "allLR_RT" = allLR_RT$genes,
+  "invLR_RT" = invLR_RT$gene,
+  "insituLR_RT" = insituLR_RT$genes,
+  "allLR_noRT" = allLR_noRT$genes,
+  "invLR_noRT" = invLR_noRT$gene
+  #"insituLR_noRT" = insituLR_noRT$genes
+)
+
+# Create UpSet plot
+plot.df <- upset(fromList(list_input), 
+      order.by = "freq", 
+      text.scale = 1.5,
+      point.size = 3,
+      line.size = 1, nsets=20)
+
+pdf("/path/to/figures/exp07/upsetR_plot.pdf")
+plot.df
+dev.off()
+```
+
+```{r}
+# Get the binary matrix of intersections that are actually plotted
+intersections <- plot.df$New_data[rowSums(plot.df$New_data) > 0, ]
+
+# Sort by frequency (same as in plot)
+intersections <- intersections[order(rowSums(intersections), decreasing=TRUE), ]
+
+# Create empty list to store results
+intersection_list <- list()
+
+# For each intersection
+for(i in 1:nrow(intersections)) {
+    # Get which sets should have the genes (value 1 in intersection)
+    present_sets <- names(intersections)[intersections[i,] == 1]
+    
+    # Get which sets should NOT have the genes (value 0 in intersection)
+    absent_sets <- names(intersections)[intersections[i,] == 0]
+    
+    # First get genes present in ALL required sets
+    genes_in_present <- Reduce(intersect, lapply(present_sets, function(set) list_input[[set]]))
+    
+    # Then remove any genes that appear in ANY of the sets where they shouldn't be
+    exclusive_genes <- genes_in_present[!genes_in_present %in% 
+        unique(unlist(lapply(absent_sets, function(set) list_input[[set]])))]
+    
+    # Add to list if there are genes
+    if(length(exclusive_genes) > 0) {
+        intersection_name <- paste(present_sets, collapse="&")
+        intersection_list[[intersection_name]] <- sort(exclusive_genes)
+    }
+}
+
+```
+```{r}
+vc_cols = RColorBrewer::brewer.pal(n = 8, name = 'Paired')
+names(vc_cols) = c(
+  'Frame_Shift_Del',
+  'Missense_Mutation',
+  'Nonsense_Mutation',
+  'Multi_Hit',
+  'Frame_Shift_Ins',
+  'In_Frame_Ins',
+  'Splice_Site',
+  'In_Frame_Del'
+)
+
+
+col.clinical <- list()
+col.clinical[["subtype"]] <- c(LumA="blue4", LumB="deepskyblue", Basal="firebrick2", Normal="green4", Her2="hotpink2", "NA"="darkgrey")
+col.clinical[["age"]] <- c(over60="#3182bd", "50-60"="#9ecae1", under50="#deebf7")
+col.clinical[["nugradef"]] <- c(High="#de2d26", Moderate="#fc9272", Low="#fee0d2")
+col.clinical[["event.10.chr"]] <- c("0"="#fee0b6", "1"="#b35806")
+
+col.clinical[["event.type.10"]] <- c('in-situ LR'="#f1a340", 'invasive LR'="#b35806", 'no LR' = "#fff7ec")
+
+  
+col.clinical[["tt.outcome"]] <- c(FALSE_DCIS="#998ec3", FALSE_INVA="#542788", FALSE_NA="#d8daeb",
+                                  TRUE_DCIS="#f1a340", TRUE_INVA="#b35806", TRUE_NA = "#fee0b6")
+col.clinical[["n_nonsynonymous_mut_cat"]] <- c("TRUE"="black", "FALSE"="white")
+
+
+oncoplot(maf = invLR_RT$maf, genes = intersection_list$invLR_RT, colors = vc_cols, clinicalFeatures = c('event.type.10','age', 'nugradef','subtype'), annotationColor=col.clinical,fontSize = 0.3,  gene_mar = 8, showTitle = FALSE)
+
+
+pdf("/path/to/figures/exp07/oncoplot_unique_invLR_RT_coxphf.pdf", width =12)
+oncoplot(maf = invLR_RT$maf, genes = intersection_list$invLR_RT, colors = vc_cols, clinicalFeatures = c('event.type.10','age', 'nugradef','subtype'), annotationColor=col.clinical,fontSize = 0.3,  gene_mar = 8, showTitle = FALSE)
+dev.off()
+
+
+```
+
+```{r}
+oncoplot(maf = invLR_RT$maf, genes = intersection_list$insituLR_RT, colors = vc_cols, clinicalFeatures = c('event.type.10','age', 'nugradef','subtype'), annotationColor=col.clinical,fontSize = 0.3,  gene_mar = 8, showTitle = FALSE)
+
+
+pdf("/path/to/figures/exp07/oncoplot_unique_insituLR_RT_coxphf.pdf", width =12)
+oncoplot(maf = invLR_RT$maf, genes = intersection_list$insituLR_RT, colors = vc_cols, clinicalFeatures = c('event.type.10','age', 'nugradef','subtype'), annotationColor=col.clinical,fontSize = 0.3,  gene_mar = 8, showTitle = FALSE)
+dev.off()
+
+```
+```{r}
+library(clusterProfiler)
+library(GOSemSim)
+# BiocManager::install("org.Hs.eg.db")  # for human genes
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(enrichplot)
+
+
+# Convert gene symbols to Entrez IDs
+entrez_ids <- mapIds(org.Hs.eg.db,
+keys = as.character(intersection_list$insituLR_RT),
+column = "ENTREZID",
+keytype = "SYMBOL",
+multiVals = "first")
+
+
+
+ggo <- groupGO(gene     = entrez_ids,
+               OrgDb    = org.Hs.eg.db,
+               ont      = "CC",
+               level    = 4,
+               readable = TRUE)
+
+ggodf <- as.data.frame(ggo)
+ggodf[ggodf$Count>0,]
+
+genes_df <- ggodf[ggodf$Count>0,] %>%
+  separate_rows(geneID, sep = "/") %>%
+  mutate(Present = 1)
+
+genes_df
+
+allgenes.cc.plot <- ggplot(genes_df, aes(x = Description, y = geneID)) +
+  geom_point(size = 3, color = "steelblue") +
+  coord_flip() +
+  theme_minimal() +
+  labs(x = "Cellular Component GO Terms",
+       y = "",
+       title = "") +
+  theme(
+  axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+  axis.text.y = element_text(size = 10)
+)
+allgenes.cc.plot
+
+
+ego <- enrichGO(gene          = entrez_ids,
+                universe      = unique(as.character(allLR_all$maf@data$Entrez_Gene_Id)),
+                OrgDb = org.Hs.eg.db, 
+                ont           = "CC",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 1,
+                qvalueCutoff  = 1,
+                readable      = TRUE)
+head(ego)
+
+ego10 <- enrichGO(entrez_ids,
+                OrgDb = 'org.Hs.eg.db', ont="CC", pvalueCutoff=1, readable = TRUE)
+head(ego10)
+
+ego <- pairwise_termsim(ego10)
+#goplot(ego)
+
+emapplot(ego, showCategory = 8)  # adjust number of categories as needed
+
+```
+```{r}
+entrez_ids <- mapIds(org.Hs.eg.db,
+keys = as.character(intersection_list$invLR_RT),
+column = "ENTREZID",
+keytype = "SYMBOL",
+multiVals = "first")
+
+
+
+ggo <- groupGO(gene     = entrez_ids,
+               OrgDb    = org.Hs.eg.db,
+               ont      = "CC",
+               level    = 4,
+               readable = TRUE)
+
+ggodf <- as.data.frame(ggo)
+ggodf[ggodf$Count>0,]
+
+genes_df <- ggodf[ggodf$Count>0,] %>%
+  separate_rows(geneID, sep = "/") %>%
+  mutate(Present = 1)
+
+genes_df
+
+allgenes.cc.plot <- ggplot(genes_df, aes(x = Description, y = geneID)) +
+  geom_point(size = 3, color = "steelblue") +
+  coord_flip() +
+  theme_minimal() +
+  labs(x = "Cellular Component GO Terms",
+       y = "",
+       title = "") +
+  theme(
+  axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+  axis.text.y = element_text(size = 10)
+)
+allgenes.cc.plot
+
+
+ego <- enrichGO(gene          = entrez_ids,
+                universe      = unique(as.character(allLR_all$maf@data$Entrez_Gene_Id)),
+                OrgDb = org.Hs.eg.db, 
+                ont           = "CC",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 1,
+                qvalueCutoff  = 1,
+                readable      = TRUE)
+head(ego)
+
+ego10 <- enrichGO(entrez_ids,
+                OrgDb = 'org.Hs.eg.db', ont="CC", pvalueCutoff=1, readable = TRUE)
+head(ego10)
+
+ego <- pairwise_termsim(ego10)
+#goplot(ego)
+
+emapplot(ego, showCategory = 8)  # adjust number of categories as needed
+```
+```{r}
+source("../../src/survival.R")
+
+unique_inv_all <- survival.analysis(maf_data = allLR_all$maf, genes = intersection_list$invLR_RT, clinsubset = "radiation==TRUE", geneSetSize = 13, minMutations = 2, genecombo = 'union', time = "time.10", event = "event.10", pvalue = 1, use_permutation = TRUE, perm_p = 1, n_perm = 1000,  output="/path/to/figures/exp07/unique_inv_all") 
+unique_inv_all$surv_result
+
+unique_inv_insitu <- survival.analysis(maf_data = insituLR_all$maf, genes = intersection_list$invLR_RT, clinsubset = "radiation==TRUE", geneSetSize = 13, minMutations = 2, genecombo = 'union', time = "time.10", event = "event.10.insitu", perm_p = 1, pvalue = 1, use_permutation = TRUE, n_perm = 1000, output="/path/to/figures/exp07/unique_inv_insitu") 
+unique_inv_insitu$surv_result
+
+unique_inv_inv <- survival.analysis(maf_data = invLR_all$maf, genes = intersection_list$invLR_RT, clinsubset = "radiation==TRUE", geneSetSize = 13, minMutations = 2, genecombo = 'union', time = "time.10", event = "event.10.inv", perm_p = 1, pvalue = 1, use_permutation = TRUE, n_perm = 1000, output="/path/to/figures/exp07/unique_inv_inv") 
+unique_inv_inv$surv_result
+
+```
+
+
+```{r}
+unique_insitu_all <- survival.analysis(maf_data = allLR_all$maf, genes = intersection_list$insituLR_RT, clinsubset = "radiation==TRUE", geneSetSize = 19, minMutations = 2, genecombo = 'union', time = "time.10", event = "event.10", pvalue = 1, use_permutation = TRUE, perm_p = 1, n_perm = 1000,  output="/path/to/figures/exp07/unique_insitu_all") 
+
+unique_insitu_insitu <- survival.analysis(maf_data = insituLR_all$maf, genes = intersection_list$insituLR_RT, clinsubset = "radiation==TRUE", geneSetSize = 19, minMutations = 2, genecombo = 'union', time = "time.10", event = "event.10.insitu", perm_p = 1, pvalue = 1, use_permutation = TRUE, n_perm = 1000, output="/path/to/figures/exp07/unique_insitu_insitu") 
+
+unique_insitu_inv <- survival.analysis(maf_data = invLR_all$maf, genes = intersection_list$insituLR_RT, clinsubset = "radiation==TRUE", geneSetSize = 19, minMutations = 2, genecombo = 'union', time = "time.10", event = "event.10.inv", perm_p = 1, pvalue = 1, use_permutation = TRUE, n_perm = 1000, output="/path/to/figures/exp07/unique_insitu_inv") 
+
+```
+
+```{r}
+allLR_RT_set27 <- survival.analysis(maf_data = allLR_RT$maf, genes = allLR_RT$genes[!allLR_RT$genes %in% c(allLR_all$genes, "ZNF641")], clinsubset = "radiation==TRUE", geneSetSize = 26, minMutations = 2, genecombo = 'union', time = "time.10", event = "event.10", pvalue = 1, use_permutation = TRUE, perm_p = 1, n_perm = 1000,  output="/path/to/figures/exp07/RTgenesallLR_noall_RT")
+
+allLR_RT_set27_noRT <- survival.analysis(maf_data = allLR_noRT$maf, genes = allLR_RT$genes[!allLR_RT$genes %in% c(allLR_all$genes, "ZNF641")], geneSetSize = 26, minMutations = 2, genecombo = 'union', time = "time.10", event = "event.10", pvalue = 1, use_permutation = TRUE, perm_p = 1, n_perm = 1000,  output="/path/to/figures/exp07/RTgenesallLR_noall_noRT")
+
+```
+```{r}
+cox_model <- coxphf(formula = survival::Surv(time.10, event.10) ~ n_nonsynonymous_mut, data = allLR_all$maf@clinical.data)
+cox_model
+
+cox_model <- coxphf(formula = survival::Surv(time.10, event.10) ~ n_nonsynonymous_mut, data = allLR_RT$maf@clinical.data)
+cox_model
+
+```
+```{r}
+allLR_RT_set29 <- survival.analysis(maf_data = allLR_RT$maf, genes = allLR_RT$genes, clinsubset = "radiation==TRUE", geneSetSize = 29, minMutations = 2, genecombo = 'union', time = "time.10", event = "event.10", pvalue = 1, use_permutation = TRUE, perm_p = 1, n_perm = 1000,  output="/path/to/figures/exp07/")
+
+
+
+cd <- allLR_RT_set29$surv_result$res$ANO6_SH2B2_REV1_C6orf118_MUCL3_PCSK1_WWC1_TMEM132C_SORBS1_CTBP2_TTLL10_KRT1_EML5_MAGEC3_EXD3_NPFFR1_ABCA2_MGAM2_CEP128_GLI3_PTPN13_CFAP47_TBC1D4_ZNF641_AADACL3_AFF3_MROH2B_CALU_KIF24$data
+
+firth_model <- coxphf(Surv(Time, Status) ~ Group+age, data = cd)
+firth_model
+
+firth_model <- coxphf(Surv(Time, Status) ~ Group+nugradef, data = cd)
+firth_model
+
+firth_model <- coxphf(Surv(Time, Status) ~ Group+tumor_size, data = cd)
+firth_model
+
+firth_model <- coxphf(Surv(Time, Status) ~ Group+subtype, data = cd)
+firth_model
+
+firth_model <- coxphf(Surv(Time, Status) ~ Group+mfocf, data = cd)
+firth_model
+
+
+```
+

@@ -33,6 +33,16 @@ cl$ipsi_lr <- !is.na(cl$hist_1st_lr)
 cl <- adjust_survival(cl, cutoff=10)
 cl$event.10.chr <- as.character(cl$event.10)
 
+cl$event.10.inv <- ifelse(cl$event.10==1 & cl$hist_1st_lr=="DCIS", 0, cl$event.10)
+
+cl$event.10.insitu <- ifelse(cl$event.10==1 & cl$hist_1st_lr=="INVA", 0, cl$event.10)
+
+cl$event.type.10 <- "no LR"
+cl$event.type.10 <- ifelse(cl$event.10.insitu==1, "in-situ LR", cl$event.type.10)
+cl$event.type.10 <- ifelse(cl$event.10.inv==1, "invasive LR", cl$event.type.10)
+
+
+
 
 # Format cytoband data
 cytoband_long <- cytoband %>%
@@ -56,10 +66,8 @@ cytoband_long <- left_join(cytoband_long, cl)
 
 ```{r}
 
-# Recode 'Low' grade as 'Moderate' in 'nugradef2'
 cytoband_long$nugradef2 <- ifelse(cytoband_long$nugradef=="Low", "Moderate", cytoband_long$nugradef)
 
-# Function to perform cox and survival analysis a single cytoband
 analyze_cytoband <- function(data, n_permutations = 1000, seed = 1234) {
   cytoband <- unique(data$cytoband)
   
@@ -98,9 +106,9 @@ analyze_cytoband <- function(data, n_permutations = 1000, seed = 1234) {
       # Fit model with permuted data
       tryCatch({
         if(alteration_type == "gain") {
-          perm_model <- coxphf(Surv(time.10, event.10) ~ gain + nugradef2, data = perm_data)
+          perm_model <- coxphf(Surv(time.10, event.10.insitu) ~ gain + nugradef2, data = perm_data)
         } else {
-          perm_model <- coxphf(Surv(time.10, event.10) ~ loss + nugradef2, data = perm_data)
+          perm_model <- coxphf(Surv(time.10, event.10.insitu) ~ loss + nugradef2, data = perm_data)
         }
         perm_coefs[i] <- coef(perm_model)[1]
       }, error = function(e) {
@@ -114,7 +122,7 @@ analyze_cytoband <- function(data, n_permutations = 1000, seed = 1234) {
   
   # Analysis for gain
   gain_analysis <- if(n_gain >= 5) {tryCatch({
-    surv_fit_gain <- survfit(Surv(time.10, event.10) ~ gain, data = data)
+    surv_fit_gain <- survfit(Surv(time.10, event.10.insitu) ~ gain, data = data)
     plot_gain <- ggsurvplot(
       surv_fit_gain,
       data = data,
@@ -125,7 +133,7 @@ analyze_cytoband <- function(data, n_permutations = 1000, seed = 1234) {
       ylab = "Survival probability",
       title = paste("Kaplan-Meier Curve for", cytoband, "(Gain)")
     )
-    cox_model_gain <- coxphf(Surv(time.10, event.10) ~ gain + nugradef2, data = data)
+    cox_model_gain <- coxphf(Surv(time.10, event.10.insitu) ~ gain + nugradef2, data = data)
     perm_pval_gain <- get_permuted_pvalue(cox_model_gain, data, n_permutations, "gain")
     
     list(plot = plot_gain, 
@@ -136,7 +144,7 @@ analyze_cytoband <- function(data, n_permutations = 1000, seed = 1234) {
   
   # Analysis for loss
   loss_analysis <- if(n_loss >= 5) {tryCatch({
-    surv_fit_loss <- survfit(Surv(time.10, event.10) ~ loss, data = data)
+    surv_fit_loss <- survfit(Surv(time.10, event.10.insitu) ~ loss, data = data)
     plot_loss <- ggsurvplot(
       surv_fit_loss,
       data = data,
@@ -147,7 +155,7 @@ analyze_cytoband <- function(data, n_permutations = 1000, seed = 1234) {
       ylab = "Survival probability",
       title = paste("Kaplan-Meier Curve for", cytoband, "(Loss)")
     )
-    cox_model_loss <- coxphf(Surv(time.10, event.10) ~ loss + nugradef2, data = data)
+    cox_model_loss <- coxphf(Surv(time.10, event.10.insitu) ~ loss + nugradef2, data = data)
     perm_pval_loss <- get_permuted_pvalue(cox_model_loss, data, n_permutations, "loss")
     
     list(plot = plot_loss, 
@@ -248,122 +256,4 @@ print(significant_cytobands_dn)
 
 ```
 
-```{r}
 
-significant_cytobands <- significant_cytobands_up
-# Create matrices for gain and loss
-gain_matrix <- cytoband_long %>%
-  filter(cytoband %in% significant_cytobands$cytoband[significant_cytobands$gain_pvalue < 0.05]) %>%
-  dplyr::select(Tumor_Sample_Barcode, cytoband, gain) %>%
-  mutate(gain = as.logical(gain)) %>%
-  pivot_wider(
-    names_from = cytoband, 
-    values_from = gain, 
-    values_fill = FALSE
-  ) %>%
-  column_to_rownames("Tumor_Sample_Barcode")
-
-# Convert to matrix
-gain_matrix <- as.matrix(gain_matrix)
-
-# Convert logical to integer (0/1)
-gain_matrix <- gain_matrix * 1
-
-
-loss_matrix <- cytoband_long %>%
-  filter(cytoband %in% significant_cytobands$cytoband[significant_cytobands$loss_pvalue < 0.05]) %>%
-  dplyr::select(Tumor_Sample_Barcode, cytoband, loss) %>%
-  mutate(loss = as.logical(loss)) %>%
-  pivot_wider(
-    names_from = cytoband, 
-    values_from = loss, 
-    values_fill = FALSE
-  ) %>%
-  column_to_rownames("Tumor_Sample_Barcode")
-
-# Convert to matrix
-loss_matrix <- as.matrix(loss_matrix)
-
-# Convert logical to integer (0/1)
-loss_matrix <- loss_matrix * 1
-
-
-
-
-align_matrices <- function(gain_mat, loss_mat) {
-  all_cytobands <- union(colnames(gain_mat), colnames(loss_mat))
-  all_samples <- union(rownames(gain_mat), rownames(loss_mat))
-  
-  aligned_gain <- matrix(0, nrow = length(all_samples), ncol = length(all_cytobands))
-  aligned_loss <- matrix(0, nrow = length(all_samples), ncol = length(all_cytobands))
-  
-  rownames(aligned_gain) <- rownames(aligned_loss) <- all_samples
-  colnames(aligned_gain) <- colnames(aligned_loss) <- all_cytobands
-  
-  aligned_gain[rownames(gain_mat), colnames(gain_mat)] <- gain_mat
-  aligned_loss[rownames(loss_mat), colnames(loss_mat)] <- loss_mat
-  
-  list(gain = aligned_gain, loss = aligned_loss)
-}
-
-aligned_matrices <- align_matrices(gain_matrix, loss_matrix)
-gain_matrix <- aligned_matrices$gain
-loss_matrix <- aligned_matrices$loss
-
-combined_matrix <- gain_matrix - loss_matrix
-
-# Create a custom color palette
-color_palette <- colorRampPalette(c("blue", "white", "red"))(3)
-
-cl$event.10.inv <- ifelse(cl$event.10==1 & cl$hist_1st_lr=="DCIS", 0, cl$event.10)
-
-cl$event.10.insitu <- ifelse(cl$event.10==1 & cl$hist_1st_lr=="INVA", 0, cl$event.10)
-
-cl$event.type.10 <- "no LR"
-cl$event.type.10 <- ifelse(cl$event.10.insitu==1, "in-situ LR", cl$event.type.10)
-cl$event.type.10 <- ifelse(cl$event.10.inv==1, "invasive LR", cl$event.type.10)
-
-
-
-cl.df <- cl[ , c('event.type.10','age', 'nugradef','subtype', 'GCS', 'time.10')]
-
-col.clinical <- list()
-col.clinical[["subtype"]] <- c(LumA="blue4", LumB="deepskyblue", Basal="firebrick2", Normal="green4", Her2="hotpink2", "NA"="darkgrey")
-col.clinical[["age"]] <- c(over60="#3182bd", "50-60"="#9ecae1", under50="#deebf7")
-col.clinical[["nugradef"]] <- c(High="#de2d26", Moderate="#fc9272", Low="#fee0d2")
-col.clinical[["event.10.chr"]] <- c("0"="#fee0b6", "1"="#b35806")
-col.clinical[["event.type.10"]] <- c('in-situ LR'="#f1a340", 'invasive LR'="#b35806", 'no LR' = "white")
-
-col.clinical[["GCS"]] <- viridisLite::viridis(n=100, option="G", direction = -1)
-
-
-plot.df <- t(combined_matrix)
-
-
-# Convert combined_matrix to binary (0 for loss, 1 for no change or gain)
-binary_matrix <- ifelse(plot.df >= 0, 1, 0)
-
-# Calculate distance matrix using binary metric
-dist_matrix <- dist(t(binary_matrix), method = "binary")
-
-# Create the heatmap with custom clustering
-pdf("../../figures/exp07/heatmap_significant_cna.pdf")
-pheatmap(
-  plot.df,
-  color = color_palette,
-  breaks = c(-1, -0.5, 0.5, 1),
-  show_colnames = FALSE,
-  annotation_colors = col.clinical,
-  annotation_col = cl.df,
-  main = "",
-  legend_labels = c("Loss", "No Change", "Gain"),
-  cluster_rows = TRUE,
-  cluster_cols = TRUE,
-  clustering_method = "ward.D",
-  clustering_distance_cols = "minkowski",
-  fontsize = 8
-)
-dev.off()
-
-
-```

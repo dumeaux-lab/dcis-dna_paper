@@ -1,0 +1,125 @@
+---
+title: "depth"
+author: "Vanessa Dumeaux"
+date: "2025-05-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+dcis <- readRDS("/path/to/Rdata/output/exp04/dcis.rds")
+dcis@clinical.data$files
+```
+
+
+```{r}
+library(R.utils)
+
+library(BiocParallel)
+
+# changed 10 to 12 cores as the number of samples (48) is divisible by this number
+ncores <- 20
+register(MulticoreParam(workers=ncores))
+
+
+exome.stats.picard <- function(x){
+  system(capture.output(
+    cat("java -jar /path/to/software/folder/picard.jar CollectMultipleMetrics R=/path/to/db/folder/gatk_hg38/Homo_sapiens_assembly38.fasta", 
+        paste0("I=", dcis@clinical.data$files[x]), 
+        paste0("O=",file.path("/path/to/output/exp08", paste0(dcis@clinical.data$sample_name[x], "_picardMetrics.txt")))
+    )
+  ))
+}
+
+bplapply(seq_along(dcis@clinical.data$sample_name), exome.stats.picard)
+
+
+```
+
+```{r}
+x <- dcis@clinical.data$sample_name[3]
+
+# Read all lines first
+lines <- readLines(paste0("/path/to/output/exp08/", x, "_picardMetrics.txt.alignment_summary_metrics"))
+
+# Find the line with column headers (contains "CATEGORY")
+header_line <- grep("CATEGORY", lines)
+
+# Read the data starting from the header line
+metrics <- read.delim(text = lines[header_line:length(lines)], 
+                     header = TRUE,
+                     stringsAsFactors = FALSE,
+                     check.names = FALSE)
+
+# View the results
+head(metrics)
+
+# Total reads correspond to number in clinical.data 
+# do not need to import this information again
+dcis@clinical.data$mil_seqs
+
+```
+# add depth & make plot
+
+```{r}
+# For human exome (~50 Mb target region)
+target_size = 50 * 1000000  # 50Mb in bases
+read_length = 100  # PE 100bp
+
+
+# Calculate depth
+dcis@clinical.data$depth = ((dcis@clinical.data$mil_seqs*10^6 / 2) * (read_length*2)) / target_size  # (divided by 2 for pairs)
+# depth ≈ 135x average coverage
+
+summary(dcis@clinical.data$depth)
+sd(dcis@clinical.data$depth)
+
+df <- dcis@clinical.data
+
+# Histogram of depth
+ggplot(df, aes(x=depth)) +
+  geom_histogram(fill="steelblue", color="black", alpha=0.7, bins=30) +
+  theme_minimal() +
+  labs(x="Sequencing Depth", 
+       y="Count",
+       title="Distribution of Sequencing Depth") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Scatterplot of depth vs mutations
+ggplot(df, aes(x=depth, y=n_nonsynonymous_mut)) +
+  geom_point(color="steelblue", alpha=0.6) +
+  theme_minimal() +
+  labs(x="Sequencing Depth", 
+       y="Number of Nonsynonymous Mutations",
+       title="Sequencing Depth vs Nonsynonymous Mutations") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+
+library(ggplot2)
+library(ggExtra)
+
+# First create the scatter plot
+p <- ggplot(df, aes(x=depth, y=n_nonsynonymous_mut)) +
+  geom_point(color="steelblue", alpha=0.6) +
+  theme_minimal() +
+  labs(x="Sequencing Depth", 
+       y="Number of Nonsynonymous Mutations") +
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+q <- ggMarginal(p, type="histogram", 
+           fill="steelblue", 
+           alpha=0.7)
+
+ggsave("/path/to/figures/exp08/depth_mut_plot.pdf",q, height = 5)
+
+
+
+```
+
+
+
